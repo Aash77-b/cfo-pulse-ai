@@ -1,1 +1,91 @@
+/* Main container styling */
+.main {
+    padding: 0rem 1rem;
+}
 
+/* Card styling */
+.custom-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 20px;
+    border-radius: 15px;
+    color: white;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    margin-bottom: 20px;
+}
+
+/* Metric cards */
+.metric-card {
+    background: white;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    border: 1px solid #e0e0e0;
+}
+
+/* Status badges */
+.risk-badge-low {
+    background: #10b981;
+    color: white;
+    padding: 5px 15px;
+    border-radius: 20px;
+    font-weight: 600;
+    display: inline-block;
+}
+
+.risk-badge-medium {
+    background: #f59e0b;
+    color: white;
+    padding: 5px 15px;
+    border-radius: 20px;
+    font-weight: 600;
+    display: inline-block;
+}
+
+.risk-badge-high {
+    background: #ef4444;
+    color: white;
+    padding: 5px 15px;
+    border-radius: 20px;
+    font-weight: 600;
+    display: inline-block;
+}
+
+/* Button styling */
+.stButton > button {
+    width: 100%;
+    border-radius: 8px;
+    height: 45px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.stButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}
+
+/* Sidebar styling */
+.css-1d391kg {
+    background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+/* Progress bar styling */
+.stProgress > div > div {
+    background-color: #667eea;
+}
+
+/* Tab styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px;
+    padding: 10px 20px;
+    background-color: #f8f9fa;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: #667eea !important;
+    color: white !important;
+}
