@@ -1,0 +1,26 @@
+rule_id,rule_name,tax_type,category,rate,description,effective_date,status,min_amount,max_amount,notes
+TR001,Standard VAT,VAT,General,15%,Standard 15% VAT on taxable goods and services,2024-01-01,Active,0,999999999,Applies to most transactions
+TR002,ToT Standard,ToT,Standard,2%,Tax on Transactions - Standard rate for most transaction types,2024-01-01,Active,0,999999999,Standard business transactions
+TR003,ToT Digital,ToT,Digital,10%,Tax on Transactions - Digital services rate,2024-01-01,Active,0,999999999,Digital payments and online services
+TR004,Import Duty,CustomDuty,Import,5-25%,Variable import duty based on goods classification,2024-01-01,Active,0,999999999,Depends on HS code
+TR005,Export Tax,TaxExempt,Export,0%,No tax on exported goods,2024-01-01,Active,0,999999999,Export transactions are tax exempt
+TR006,Medical VAT,VATExempt,Medical,0%,Medical supplies and pharmaceutical products,2024-01-01,Active,0,999999999,Basic healthcare items exempt
+TR007,Food VAT,VATExempt,Food,0%,Essential food items and basic commodities,2024-01-01,Active,0,999999999,Bread wheat flour basic foods
+TR008,Education VAT,VATExempt,Education,0%,Educational materials and training services,2024-01-01,Active,0,999999999,School materials textbooks
+TR009,Insurance Premium,TaxExempt,Insurance,0%,Insurance premiums transactions,2024-01-01,Active,0,999999999,Insurance premium calculations
+TR010,Bank Services,VAT,Financial,15%,Banking and financial services fees,2024-01-01,Active,0,999999999,Bank charges commissions transfers
+TR011,Large Transaction,Compliance,General,0%,Transaction amount over 100000 ETB - requires additional documentation,2024-01-01,Active,100000,999999999,Compliance flag for large amounts
+TR012,Duplicate Check,Compliance,General,0%,Check for duplicate invoices within 30 day window,2024-01-01,Active,0,999999999,Fraud prevention
+TR013,TIN Verification,Compliance,General,0%,All transactions must have valid vendor TIN,2024-01-01,Active,0,999999999,Regulatory requirement
+TR014,Monthly Filing,Compliance,General,0%,Tax filing deadline is 25th of following month,2024-01-01,Active,0,999999999,MOR filing requirement
+TR015,Currency Exchange,VAT,International,15%,VAT on currency exchange transactions,2024-01-01,Active,0,999999999,International business
+TR016,Rental Income,IncomeTax,Rental,10-15%,Income tax on rental properties,2024-01-01,Active,0,999999999,Residential and commercial rentals
+TR017,Professional Services,VAT,Services,15%,VAT on professional services delivery,2024-01-01,Active,0,999999999,Consulting legal accounting services
+TR018,Dividend Income,IncomeTax,Investment,35%,Withholding tax on dividend distributions,2024-01-01,Active,0,999999999,Investment income
+TR019,Interest Income,IncomeTax,Interest,10%,Withholding tax on interest income,2024-01-01,Active,0,999999999,Bank and loan interest
+TR020,Construction,VAT,Construction,15%,VAT on construction and real estate services,2024-01-01,Active,0,999999999,Building contracts materials
+TR021,Manufacturing,VAT,Manufacturing,15%,VAT on manufactured goods and products,2024-01-01,Active,0,999999999,Factory output products
+TR022,Retail Sales,VAT,Retail,15%,Standard VAT on retail transactions,2024-01-01,Active,0,999999999,Point of sale transactions
+TR023,Freight ToT,ToT,Services,2%,Tax on freight and logistics services,2024-01-01,Active,0,999999999,Transportation charges
+TR024,Hotel VAT,VAT,Hospitality,15%,VAT on hotel and restaurant services,2024-01-01,Active,0,999999999,Lodging meals dining
+TR025,Alcohol Tax,SpecialTax,Alcohol,100%,Special excise tax on alcoholic beverages,2024-01-01,Active,0,999999999,Beers spirits wines
