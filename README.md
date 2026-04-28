@@ -49,7 +49,7 @@ We built CFO-Pulse AI to fix that.
 ---
 
 
-## Installation (For the Judges)
+## Installation 
 
 ### 1. Clone the repo
 
