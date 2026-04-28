@@ -150,15 +150,10 @@ Want to see how it works without scanning real receipts? We included sample data
 
 ## Competition Submission
 
-**Category:** Fintech for Financial Inclusion  
+**Category:** for Financial Inclusion  
 **Target users:** Ethiopian SMEs with 1-50 employees  
 **Problem solved:** Banks won't lend without verifiable records. We provide those records.
 
----
-
-## License
-
-MIT License - Use it, modify it, sell it. We just want to see it help people.
 
 ---
 
