@@ -64,9 +64,11 @@ cd cfo-pulse-ai
 python -m venv venv
 source venv/bin/activate      # Windows: venv\Scripts\activate
 ```
+```bash
 for windows use this instead
-.\venv\Scripts\activate
 
+.\venv\Scripts\activate
+```
 ### 3. Install dependencies
 
 ```bash
