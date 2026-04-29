@@ -94,6 +94,10 @@ brew install tesseract
 
 ```bash
 streamlit run app.py
+
+or run as this
+ $env:PYTHONPATH = "."                             
+>> streamlit run app/main.py   
 ```
 
 ---
