@@ -1,8 +1,7 @@
-# modules/pdf_generator.py
-
 from fpdf import FPDF
 from datetime import datetime
 import pandas as pd
+import os
 
 def generate_pdf_report(kpis, scan_history, company_profile):
     """Generate comprehensive PDF audit report"""
@@ -31,7 +30,7 @@ def generate_pdf_report(kpis, scan_history, company_profile):
     pdf.cell(95, 6, txt=f"Total Scans: {kpis.get('total_scanned', 0)}", ln=1)
     pdf.cell(95, 6, txt=f"Compliance Rate: {kpis.get('compliance_rate', '0%')}", ln=0)
     pdf.cell(95, 6, txt=f"Potential Savings: {kpis.get('blocked_leakage', '0')}", ln=1)
-    pdf.cell(95, 6, txt=f"Average Risk Score: {kpis.get('risk_score', '0')}", ln=0)
+    pdf.cell(95, 6, txt=f"Risk Score: {kpis.get('risk_score', '0')}", ln=0)
     pdf.cell(95, 6, txt=f"Flagged Items: {kpis.get('flagged_count', 0)}", ln=1)
     pdf.ln(5)
     
