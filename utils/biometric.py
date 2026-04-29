@@ -1,5 +1,3 @@
-# utils/biometric.py
-
 import cv2
 import numpy as np
 import os
@@ -9,30 +7,30 @@ def capture_face_from_camera():
     try:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
-            return None, "Camera error"
+            return None, "Cannot access camera."
         for _ in range(15):
             cap.read()
         ret, frame = cap.read()
         cap.release()
-        if not ret:
-            return None, "Failed"
+        if not ret or frame is None:
+            return None, "Failed to capture."
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), None
     except Exception as e:
-        return None, str(e)
+        return None, f"Camera error: {str(e)}"
 
 def detect_face(image):
     try:
-        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        faces = cascade.detectMultiScale(gray, 1.1, 4)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
         return len(faces) > 0, faces
     except:
         return False, []
 
 def save_biometric_data(image, user_id="CFO_Ashenafi"):
-    save_dir = "biometric_data"
+    save_dir = os.path.dirname(BIOMETRIC_FILE)
     os.makedirs(save_dir, exist_ok=True)
-    filepath = os.path.join(save_dir, f"{user_id}.jpg")
+    filepath = BIOMETRIC_FILE
     cv2.imwrite(filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
     return filepath
 
@@ -43,7 +41,7 @@ def load_registered_face():
 
 def verify_face_match(captured_image, registered_image):
     if captured_image is None or registered_image is None:
-        return False, 0.0, "No face data"
+        return False, 0.0, "Missing image data"
     try:
         target_size = (200, 200)
         img1 = cv2.resize(captured_image, target_size)
@@ -56,6 +54,8 @@ def verify_face_match(captured_image, registered_image):
         cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
         similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
         combined_score = similarity * 0.8 + (1 - np.mean(cv2.absdiff(gray1, gray2))/255) * 0.2
-        return combined_score > 0.4, combined_score, "Match" if combined_score > 0.4 else "No match"
+        if combined_score > 0.4:
+            return True, combined_score, "Face matched"
+        return False, combined_score, "Face does not match"
     except Exception as e:
-        return False, 0.0, str(e)
+        return False, 0.0, f"Error: {str(e)}"
