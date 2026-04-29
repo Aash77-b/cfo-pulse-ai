@@ -6,7 +6,7 @@ import easyocr
 import cv2
 import platform
 import os
-
+import streamlit as st
 TESSERACT_AVAILABLE = False
 EASYOCR_AVAILABLE = False
 
