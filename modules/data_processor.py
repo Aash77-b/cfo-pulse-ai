@@ -1,14 +1,14 @@
-# modules/data_processor.py
-
 import json
 import os
+import numpy as np
 from datetime import datetime
 
-DATA_FILE = "cfo_pulse_data.json"
-BIOMETRIC_FILE = "biometric_data/CFO_Ashenafi.jpg"
-PASSWORD_FILE = "master_password.txt"
-COMPANY_FILE = "company_profile.json"
-POLICY_FILE = "expense_policies.json"
+# File paths relative to project root
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_FILE = os.path.join(BASE_DIR, "cfo_pulse_data.json")
+COMPANY_FILE = os.path.join(BASE_DIR, "company_profile.json")
+POLICY_FILE = os.path.join(BASE_DIR, "expense_policies.json")
+PASSWORD_FILE = os.path.join(BASE_DIR, "master_password.txt")
 
 def get_master_password():
     if os.path.exists(PASSWORD_FILE):
@@ -130,7 +130,7 @@ def calculate_current_kpis():
         "total_audited": f"{db['total_audited']:,.0f}",
         "total_audited_delta": f"+{db['total_scanned']} scans",
         "compliance_rate": f"{compliance_rate}%",
-        "compliance_delta": f"{db['compliant_count']}/{db['total_scanned']} compliant" if db['total_scanned'] > 0 else "0/0",
+        "compliance_delta": f"{db['compliant_count']}/{db['total_scanned']} compliant" if db['total_scanned'] > 0 else "0/0 compliant",
         "blocked_leakage": f"{db['total_saved']:,.0f}",
         "blocked_delta": f"{db['flagged_count']} flagged",
         "risk_score": f"{avg_risk}/100",
