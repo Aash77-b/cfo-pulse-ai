@@ -130,20 +130,17 @@ def check_duplicate_invoice(new_invoice, scan_history):
     if not scan_history:
         return None, 0
     
-    for past in scan_history[-30:]:  # Check last 30 scans
-        # Same invoice number from same vendor
+    for past in scan_history[-30:]:
         if past.get('invoice_no') and new_invoice.get('invoice_no'):
             if past['invoice_no'] == new_invoice['invoice_no'] and past['vendor'] == new_invoice['vendor']:
                 return "EXACT DUPLICATE INVOICE", 40
         
-        # Same amount + vendor within 30 days
         if past['vendor'] == new_invoice['vendor']:
             if abs(past['total'] - new_invoice.get('total', 0)) < 1.0:
                 past_date = datetime.fromisoformat(past['date'])
                 if (datetime.now() - past_date).days <= 30:
                     return "SAME AMOUNT DETECTED - Possible duplicate", 25
         
-        # Similar amounts (within 5%)
         if past['vendor'] == new_invoice['vendor']:
             diff_pct = abs(past['total'] - new_invoice.get('total', 0)) / max(past['total'], 1) * 100
             if diff_pct < 5:
@@ -163,18 +160,15 @@ def check_policy_violations(invoice_data, policies):
     
     vendor = invoice_data.get('vendor', '').upper()
     
-    # Blacklist vendors
     for blacklisted in policies.get('blacklist_vendors', []):
         if blacklisted.upper() in vendor:
             violations.append(f"❌ Blacklisted vendor: {blacklisted}")
             total_penalty += 50
     
-    # Weekend transaction check
     if not policies.get('allow_weekend_transactions', False):
         date_str = invoice_data.get('date', '')
         if date_str:
             try:
-                # Parse date - handle various formats
                 invoice_date = None
                 for fmt in ['%d %B %Y', '%d %b %Y', '%Y-%m-%d']:
                     try:
@@ -182,19 +176,17 @@ def check_policy_violations(invoice_data, policies):
                         break
                     except:
                         continue
-                if invoice_date and invoice_date.weekday() >= 5:  # Saturday=5, Sunday=6
+                if invoice_date and invoice_date.weekday() >= 5:
                     violations.append("⚠️ Weekend transaction - Not allowed by policy")
                     total_penalty += 20
             except:
                 pass
     
-    # Meal amount limit
     if 'MEAL' in vendor or 'RESTAURANT' in vendor or 'CAFE' in vendor:
         if invoice_data.get('total', 0) > policies.get('max_meal_amount', 50):
             violations.append(f"⚠️ Meal exceeds ${policies.get('max_meal_amount', 50)} limit")
             total_penalty += 15
     
-    # Entertainment limit
     if 'ENTERTAINMENT' in vendor or 'MOVIE' in vendor or 'THEATER' in vendor:
         if invoice_data.get('total', 0) > policies.get('max_entertainment', 100):
             violations.append(f"⚠️ Entertainment exceeds ${policies.get('max_entertainment', 100)} limit")
@@ -213,18 +205,15 @@ def predict_cash_flow(scan_history):
     df['days'] = (df['date'] - df['date'].min()).dt.days
     df['cumulative'] = df['total'].cumsum()
     
-    # Linear regression for prediction
     X = df['days'].values.reshape(-1, 1)
     y = df['cumulative'].values
     
     model = LinearRegression()
     model.fit(X, y)
     
-    # Predict next 30 days
     future_days = np.arange(df['days'].max() + 1, df['days'].max() + 31).reshape(-1, 1)
     predictions = model.predict(future_days)
     
-    # Calculate daily average and shortfall risk
     daily_avg = df['total'].mean()
     shortfall_risk = "Low"
     if len(predictions) > 0:
@@ -241,14 +230,12 @@ def generate_pdf_report(kpis, scan_history, company_profile):
     pdf = FPDF()
     pdf.add_page()
     
-    # Logo/Header
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(200, 10, txt=f"CFO-Pulse Audit Report", ln=1, align='C')
     pdf.set_font("Arial", '', 10)
     pdf.cell(200, 6, txt=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align='C')
     pdf.ln(10)
     
-    # Company Info
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 8, txt="Company Information", ln=1)
     pdf.set_font("Arial", '', 10)
@@ -258,7 +245,6 @@ def generate_pdf_report(kpis, scan_history, company_profile):
     pdf.cell(100, 6, txt=f"Currency: {company_profile.get('currency', 'USD')}", ln=1)
     pdf.ln(5)
     
-    # KPI Summary
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 8, txt="Key Performance Indicators", ln=1)
     pdf.set_font("Arial", '', 10)
@@ -270,7 +256,6 @@ def generate_pdf_report(kpis, scan_history, company_profile):
     pdf.cell(95, 6, txt=f"Flagged Items: {kpis.get('flagged_count', 0)}", ln=1)
     pdf.ln(5)
     
-    # Risk Distribution
     if scan_history:
         df = pd.DataFrame(scan_history)
         low_risk = len(df[df['risk_score'] <= 25])
@@ -285,7 +270,6 @@ def generate_pdf_report(kpis, scan_history, company_profile):
         pdf.cell(60, 6, txt=f"High Risk (61-100): {high_risk}", ln=1)
         pdf.ln(5)
         
-        # Top Risky Transactions
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(200, 8, txt="Top 5 High-Risk Transactions", ln=1)
         pdf.set_font("Arial", 'B', 9)
@@ -305,7 +289,6 @@ def generate_pdf_report(kpis, scan_history, company_profile):
             pdf.cell(40, 5, txt=str(row['risk_score']), border=1)
             pdf.ln()
     
-    # Recommendations
     pdf.ln(5)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 8, txt="Recommendations", ln=1)
@@ -319,7 +302,6 @@ def generate_pdf_report(kpis, scan_history, company_profile):
     for rec in recommendations:
         pdf.cell(200, 6, txt=rec, ln=1)
     
-    # Save file
     filename = f"audit_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf.output(filename)
     return filename
@@ -681,7 +663,6 @@ def calculate_risk_score(data, duplicate_penalty=0, policy_penalty=0):
     if total > threshold * 2:
         score += 15
     
-    # Add penalties from duplicate detection and policy violations
     score += duplicate_penalty
     score += policy_penalty
     
@@ -920,20 +901,59 @@ if "Dashboard" in page:
         Potential savings of ${total_saved:,.0f} identified through fraud prevention. 
         {'⚠️ Review high-risk vendors immediately' if high_risk_count > 3 else '✅ Compliance rate is strong.'}""")
 
+# ═══════════════════════════════════════════════
+# SCAN & AUDIT - REPLACED SECTION
+# ═══════════════════════════════════════════════
 elif "Scan & Audit" in page:
-    st.title("🔍 Document Scanner")
-    st.markdown("Upload receipts or invoices for AI-powered audit")
+    st.title("🔍 Intelligent Document Scanner")
+    st.markdown("Upload receipts or invoices for AI-powered audit and fraud detection")
     
-    st.markdown("""<div style="border:2px dashed #667eea;border-radius:15px;padding:40px;text-align:center;
-        background:linear-gradient(135deg,#667eea10,#764ba210)">
-        <span style="font-size:48px">📤</span>
-        <h3>Upload Document</h3>
-        <p style="color:#6b7280">JPG, PNG, PDF (Max 10MB)</p></div>""", unsafe_allow_html=True)
-
-    uploaded = st.file_uploader("", type=['jpg', 'jpeg', 'png', 'pdf'], label_visibility="collapsed")
-
-    if uploaded:
+    # Tabs for different input methods
+    tab_upload, tab_camera = st.tabs(["📁 Upload File", "📸 Camera Capture"])
+    
+    with tab_upload:
+        st.markdown("""
+        <div style="border:2px dashed #667eea; border-radius:15px; padding:40px; text-align:center;
+                    background:linear-gradient(135deg,#667eea10,#764ba210); margin:20px 0;">
+            <span style="font-size:48px;">📄</span>
+            <h3>Drop your files here or click to upload</h3>
+            <p style="color:#6b7280;">Supports JPG, PNG, PDF (Max 10MB)</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        uploaded = st.file_uploader(
+            "Choose a file",
+            type=['jpg', 'jpeg', 'png', 'pdf'],
+            label_visibility="collapsed"
+        )
+        
+        if uploaded is not None:
+            if uploaded.type in ['image/jpeg', 'image/png', 'image/jpg']:
+                image = Image.open(uploaded)
+                st.image(image, caption="Uploaded Document", width=400)
+    
+    with tab_camera:
+        st.markdown("""
+        <div style="border:2px dashed #10b981; border-radius:15px; padding:20px; text-align:center;
+                    background:linear-gradient(135deg,#10b98110,#05966910); margin:20px 0;">
+            <span style="font-size:48px;">📸</span>
+            <h3>Capture Receipt with Camera</h3>
+            <p style="color:#6b7280;">Use your device camera to scan receipts</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Use Streamlit's native camera input (works on cloud AND local)
+        camera_file = st.camera_input("Take a picture of your receipt")
+        
+        if camera_file is not None:
+            st.success("✅ Image captured successfully!")
+            uploaded = camera_file  # Use camera input same as uploaded file
+    
+    # Process the document (from either upload or camera)
+    if 'uploaded' in locals() and uploaded is not None:
         st.markdown("---")
+        
+        # Try OCR if available
         if TESSERACT_AVAILABLE or EASYOCR_AVAILABLE:
             with st.spinner("Processing..."):
                 data = process_invoice(uploaded)
@@ -944,7 +964,9 @@ elif "Scan & Audit" in page:
                        "subtotal": 4954.20, "tax_amount": 439.68, "currency": "USD",
                        "items": "Various items", "invoice_no": "INV-001"}
         else:
-            data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, "currency": "USD", "invoice_no": "INV-001"}
+            # Fallback data when no OCR available
+            data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, 
+                   "currency": "USD", "invoice_no": "INV-001"}
         
         # Check for duplicates
         scan_history = load_data().get('scan_history', [])
@@ -1007,6 +1029,39 @@ elif "Scan & Audit" in page:
                 st.success(f"✅ VERIFIED - Score: {fraud_score}/100")
             
             st.caption("📊 Analytics updated with this scan")
+            
+            # Generate dispute email for high risk
+            if fraud_score > 60:
+                st.markdown("### 📧 Auto-Generated Dispute Email")
+                email_draft = f"""Subject: Urgent: Transaction Review Required - {data.get('invoice_no', 'N/A')}
+
+Dear {data.get('vendor', 'Vendor')} Team,
+
+Our AI audit system flagged invoice {data.get('invoice_no', 'N/A')}:
+
+• Amount: {data.get('total', 0):,.2f} {data.get('currency', 'USD')}
+• Date: {data.get('date', 'N/A')}
+• Risk Score: {fraud_score}/100
+
+Please provide documentation within 48 hours.
+
+Best regards,
+{st.session_state.get('company_name', 'Finance Department')}"""
+                
+                st.text_area("Email Draft", email_draft, height=200)
+                
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("📤 Send Dispute Email", type="primary", use_container_width=True):
+                        st.success("✅ Dispute email queued for sending!")
+                with col_btn2:
+                    if st.button("📋 Copy to Clipboard", use_container_width=True):
+                        try:
+                            import pyperclip
+                            pyperclip.copy(email_draft)
+                            st.info("📋 Copied to clipboard!")
+                        except:
+                            st.info("Select and copy the text above")
 
 elif "Fraud Reports" in page:
     st.title("🚨 Fraud Reports")
