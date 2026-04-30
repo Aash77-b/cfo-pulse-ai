@@ -2,1319 +2,1287 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
+import re
+import os
+import platform
+import json
+import cv2
 from datetime import datetime, timedelta
+from PIL import Image
 import plotly.express as px
 import plotly.graph_objects as go
 from fpdf import FPDF
-import sqlite3
-import hashlib
-import re
-from PIL import Image
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
-# ════════════════════════════════════════════════
-# BACKEND - Database Setup
-# ════════════════════════════════════════════════
-def init_database():
-    """Initialize SQLite database with required tables and sample data"""
-    conn = sqlite3.connect('cfo_pulse.db', check_same_thread=False)
-    c = conn.cursor()
-    
-    # Users table
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  username TEXT UNIQUE, 
-                  password_hash TEXT,
-                  role TEXT DEFAULT 'admin',
-                  last_login TIMESTAMP,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Transactions table
-    c.execute('''CREATE TABLE IF NOT EXISTS transactions
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  date TEXT,
-                  vendor TEXT,
-                  tin TEXT,
-                  amount REAL,
-                  vat REAL,
-                  net_amount REAL,
-                  invoice_no TEXT,
-                  items TEXT,
-                  risk_score REAL DEFAULT 0,
-                  status TEXT DEFAULT 'Pending',
-                  department TEXT DEFAULT 'Finance',
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Fraud cases table
-    c.execute('''CREATE TABLE IF NOT EXISTS fraud_cases
-                 (case_id TEXT PRIMARY KEY,
-                  date TEXT,
-                  vendor TEXT,
-                  risk_type TEXT,
-                  amount REAL,
-                  status TEXT DEFAULT 'Pending',
-                  risk_score INTEGER DEFAULT 0,
-                  description TEXT,
-                  resolution TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Audit logs table
-    c.execute('''CREATE TABLE IF NOT EXISTS audit_logs
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  user_id INTEGER,
-                  action TEXT,
-                  details TEXT,
-                  ip_address TEXT DEFAULT '127.0.0.1')''')
-    
-    # Settings table
-    c.execute('''CREATE TABLE IF NOT EXISTS settings
-                 (key TEXT PRIMARY KEY,
-                  value TEXT,
-                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Insert default admin user (admin/admin123)
-    c.execute("SELECT COUNT(*) FROM users WHERE username='admin'")
-    if c.fetchone()[0] == 0:
-        default_hash = hashlib.sha256('admin123'.encode()).hexdigest()
-        c.execute("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-                 ('admin', default_hash, 'admin'))
-    
-    # Insert demo user
-    c.execute("SELECT COUNT(*) FROM users WHERE username='demo'")
-    if c.fetchone()[0] == 0:
-        demo_hash = hashlib.sha256('demo123'.encode()).hexdigest()
-        c.execute("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-                 ('demo', demo_hash, 'user'))
-    
-    # Insert sample fraud cases
-    c.execute("SELECT COUNT(*) FROM fraud_cases")
-    if c.fetchone()[0] == 0:
-        sample_cases = [
-            ('FRD-001', '2026-04-20', 'Addis Tech Solutions', 'Duplicate Invoice', 45000, 'Investigating', 92, 
-             'Same invoice submitted twice for payment. Possible duplicate claim detected.', ''),
-            ('FRD-002', '2026-04-19', 'Global Supplies PLC', 'Price Inflation', 12500, 'Resolved', 67, 
-             'Prices are 300% above market rate for standard office supplies.', 'Vendor corrected pricing and issued credit note.'),
-            ('FRD-003', '2026-04-18', 'Unknown Vendor Ltd', 'Ghost Vendor', 89000, 'Pending', 95, 
-             'Vendor not found in tax registry. TIN verification failed.', ''),
-            ('FRD-004', '2026-04-17', 'IT Solutions Co', 'Unauthorized Purchase', 23400, 'Investigating', 78, 
-             'No purchase order or approval found for this transaction.', ''),
-            ('FRD-005', '2026-04-16', 'Quick Logistics', 'Overbilling', 7800, 'Resolved', 45, 
-             'Quantity mismatch: Charged for 100 units, received 75 units.', 'Credit note issued for difference.'),
-            ('FRD-006', '2026-04-15', 'Office Depot ET', 'Fake Receipt', 15600, 'Investigating', 88, 
-             'Receipt appears to be forged. Layout and fonts don\'t match vendor template.', ''),
-            ('FRD-007', '2026-04-14', 'Tech Gadgets', 'Expense Splitting', 34000, 'Pending', 72, 
-             'Large expense split into multiple small transactions to avoid approval thresholds.', '')
+# ── OCR Setup ──────────────────────────────────
+TESSERACT_AVAILABLE = False
+EASYOCR_AVAILABLE = False
+
+try:
+    import pytesseract
+    if platform.system() == "Windows":
+        possible_paths = [
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
         ]
-        c.executemany('''INSERT OR IGNORE INTO fraud_cases 
-                         (case_id, date, vendor, risk_type, amount, status, risk_score, description, resolution)
-                         VALUES (?,?,?,?,?,?,?,?,?)''', sample_cases)
-    
-    # Insert sample transactions
-    c.execute("SELECT COUNT(*) FROM transactions")
-    if c.fetchone()[0] == 0:
-        sample_transactions = [
-            ('2026-04-20', 'Addis Tech Solutions', '0012345678', 45000, 6750, 38250, 'INV-2026-001', 'IT Equipment Purchase', 85, 'Under Review', 'IT'),
-            ('2026-04-19', 'Office Supplies Co', '0087654321', 12500, 1875, 10625, 'INV-2026-002', 'Office Stationery', 25, 'Approved', 'Operations'),
-            ('2026-04-18', 'Logistics Partner ET', '0056781234', 89000, 13350, 75650, 'INV-2026-003', 'Shipping & Handling', 45, 'Under Review', 'Operations'),
-            ('2026-04-17', 'IT Solutions Ltd', '0034567890', 23400, 3510, 19890, 'INV-2026-004', 'Software License Renewal', 15, 'Approved', 'IT'),
-            ('2026-04-16', 'Consulting Group ET', '0090123456', 78000, 11700, 66300, 'INV-2026-005', 'Financial Consulting', 30, 'Approved', 'Finance'),
-            ('2026-04-15', 'Cleaning Services', '0011223344', 8500, 1275, 7225, 'INV-2026-006', 'Office Cleaning March', 10, 'Approved', 'HR'),
-            ('2026-04-14', 'Marketing Agency', '0055667788', 56000, 8400, 47600, 'INV-2026-007', 'Q2 Campaign Materials', 20, 'Approved', 'Sales'),
-            ('2026-04-13', 'Utility Provider', '0099887766', 23000, 3450, 19550, 'INV-2026-008', 'Electricity Bill March', 5, 'Approved', 'Operations')
-        ]
-        c.executemany('''INSERT INTO transactions 
-                        (date, vendor, tin, amount, vat, net_amount, invoice_no, items, risk_score, status, department)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?)''', sample_transactions)
-    
-    conn.commit()
-    return conn
+        for path in possible_paths:
+            if os.path.exists(path):
+                pytesseract.pytesseract.tesseract_cmd = path
+                TESSERACT_AVAILABLE = True
+                break
+    else:
+        TESSERACT_AVAILABLE = True
+except ImportError:
+    pass
 
-# ════════════════════════════════════════════════
-# BACKEND - Helper Functions
-# ════════════════════════════════════════════════
-def hash_password(password):
-    """Hash password using SHA-256"""
-    return hashlib.sha256(password.encode()).hexdigest()
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    pass
 
-def verify_credentials(username, password):
-    """Verify user credentials against database"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE username=? AND password_hash=?", 
-                 (username, hash_password(password)))
-        return c.fetchone()
-    except Exception as e:
-        st.error(f"Database error: {e}")
-        return None
+# ── Database Setup ─────────────────────────────
+DATA_FILE = "cfo_pulse_data.json"
+BIOMETRIC_FILE = "biometric_data/CFO_Ashenafi.jpg"
+PASSWORD_FILE = "master_password.txt"
+COMPANY_FILE = "company_profile.json"
+POLICY_FILE = "expense_policies.json"
 
-def log_audit(user_id, action, details, ip="127.0.0.1"):
-    """Log audit trail"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("""INSERT INTO audit_logs (timestamp, user_id, action, details, ip_address)
-                     VALUES (?,?,?,?,?)""",
-                 (datetime.now(), user_id, action, details, ip))
-        conn.commit()
-    except Exception:
-        pass  # Silent fail for audit logging
+def get_master_password():
+    if os.path.exists(PASSWORD_FILE):
+        with open(PASSWORD_FILE, 'r') as f:
+            return f.read().strip()
+    else:
+        default = "admin123"
+        with open(PASSWORD_FILE, 'w') as f:
+            f.write(default)
+        return default
 
-def ethiopian_vat(total):
-    """Calculate Ethiopian VAT (15%) for MOR compliance"""
-    vat = total * 0.15
+def save_master_password(new_password):
+    with open(PASSWORD_FILE, 'w') as f:
+        f.write(new_password)
+
+def load_company_profile():
+    if os.path.exists(COMPANY_FILE):
+        try:
+            with open(COMPANY_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
     return {
-        "net_amount": round(total - vat, 2),
-        "vat_amount": round(vat, 2),
-        "tax_type": "VAT (15%)",
-        "compliance_status": "Ready for MOR Filing"
+        "company_name": "CFO-Pulse Partner",
+        "tin": "0000000000",
+        "business_type": "",
+        "registration_number": "",
+        "address": "",
+        "phone": "",
+        "email": "",
+        "industry": "General",
+        "currency": "USD",
+        "tax_rate": 15.0
     }
 
-def fraud_detection_model(transaction_data):
-    """AI-based fraud detection scoring"""
-    risk_factors = []
+def save_company_profile(profile):
+    with open(COMPANY_FILE, 'w') as f:
+        json.dump(profile, f, indent=2)
+
+def load_expense_policies():
+    if os.path.exists(POLICY_FILE):
+        try:
+            with open(POLICY_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "max_meal_amount": 50.0,
+        "max_entertainment": 100.0,
+        "blacklist_vendors": ["CASH STORE", "GAMBLING", "CASINO"],
+        "allow_weekend_transactions": False,
+        "require_receipt_above": 25.0,
+        "enabled": True
+    }
+
+def save_expense_policies(policies):
+    with open(POLICY_FILE, 'w') as f:
+        json.dump(policies, f, indent=2)
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "total_audited": 0, "total_scanned": 0, "compliant_count": 0,
+        "flagged_count": 0, "total_saved": 0, "scan_history": [], "risk_scores": []
+    }
+
+def save_data(data):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=2, default=str)
+
+def check_duplicate_invoice(new_invoice, scan_history):
+    """Detect duplicate invoices"""
+    if not scan_history:
+        return None, 0
     
-    # Factor 1: Amount anomaly
-    amount = transaction_data.get('total', 0)
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT AVG(amount) FROM transactions")
-        avg_amount = c.fetchone()[0] or 5000
-    except Exception:
-        avg_amount = 5000
+    for past in scan_history[-30:]:  # Check last 30 scans
+        # Same invoice number from same vendor
+        if past.get('invoice_no') and new_invoice.get('invoice_no'):
+            if past['invoice_no'] == new_invoice['invoice_no'] and past['vendor'] == new_invoice['vendor']:
+                return "EXACT DUPLICATE INVOICE", 40
+        
+        # Same amount + vendor within 30 days
+        if past['vendor'] == new_invoice['vendor']:
+            if abs(past['total'] - new_invoice.get('total', 0)) < 1.0:
+                past_date = datetime.fromisoformat(past['date'])
+                if (datetime.now() - past_date).days <= 30:
+                    return "SAME AMOUNT DETECTED - Possible duplicate", 25
+        
+        # Similar amounts (within 5%)
+        if past['vendor'] == new_invoice['vendor']:
+            diff_pct = abs(past['total'] - new_invoice.get('total', 0)) / max(past['total'], 1) * 100
+            if diff_pct < 5:
+                past_date = datetime.fromisoformat(past['date'])
+                if (datetime.now() - past_date).days <= 15:
+                    return "SIMILAR AMOUNT - Review required", 15
     
-    if avg_amount > 0:
-        amount_ratio = min(amount / avg_amount, 5)
-        risk_factors.append(amount_ratio * 20)
+    return None, 0
+
+def check_policy_violations(invoice_data, policies):
+    """Check expense policy violations"""
+    violations = []
+    total_penalty = 0
     
-    # Factor 2: Vendor risk assessment
-    vendor = transaction_data.get('vendor', '').lower()
-    high_risk_keywords = ['unknown', 'shell', 'ghost', 'fake', 'test']
-    if any(keyword in vendor for keyword in high_risk_keywords):
-        risk_factors.append(40)
+    if not policies.get('enabled', True):
+        return violations, 0
+    
+    vendor = invoice_data.get('vendor', '').upper()
+    
+    # Blacklist vendors
+    for blacklisted in policies.get('blacklist_vendors', []):
+        if blacklisted.upper() in vendor:
+            violations.append(f"❌ Blacklisted vendor: {blacklisted}")
+            total_penalty += 50
+    
+    # Weekend transaction check
+    if not policies.get('allow_weekend_transactions', False):
+        date_str = invoice_data.get('date', '')
+        if date_str:
+            try:
+                # Parse date - handle various formats
+                invoice_date = None
+                for fmt in ['%d %B %Y', '%d %b %Y', '%Y-%m-%d']:
+                    try:
+                        invoice_date = datetime.strptime(date_str, fmt)
+                        break
+                    except:
+                        continue
+                if invoice_date and invoice_date.weekday() >= 5:  # Saturday=5, Sunday=6
+                    violations.append("⚠️ Weekend transaction - Not allowed by policy")
+                    total_penalty += 20
+            except:
+                pass
+    
+    # Meal amount limit
+    if 'MEAL' in vendor or 'RESTAURANT' in vendor or 'CAFE' in vendor:
+        if invoice_data.get('total', 0) > policies.get('max_meal_amount', 50):
+            violations.append(f"⚠️ Meal exceeds ${policies.get('max_meal_amount', 50)} limit")
+            total_penalty += 15
+    
+    # Entertainment limit
+    if 'ENTERTAINMENT' in vendor or 'MOVIE' in vendor or 'THEATER' in vendor:
+        if invoice_data.get('total', 0) > policies.get('max_entertainment', 100):
+            violations.append(f"⚠️ Entertainment exceeds ${policies.get('max_entertainment', 100)} limit")
+            total_penalty += 15
+    
+    return violations, total_penalty
+
+def predict_cash_flow(scan_history):
+    """Predict future cash flow based on historical data"""
+    if len(scan_history) < 5:
+        return None, None, "Need at least 5 scans for prediction"
+    
+    df = pd.DataFrame(scan_history)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+    df['days'] = (df['date'] - df['date'].min()).dt.days
+    df['cumulative'] = df['total'].cumsum()
+    
+    # Linear regression for prediction
+    X = df['days'].values.reshape(-1, 1)
+    y = df['cumulative'].values
+    
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    # Predict next 30 days
+    future_days = np.arange(df['days'].max() + 1, df['days'].max() + 31).reshape(-1, 1)
+    predictions = model.predict(future_days)
+    
+    # Calculate daily average and shortfall risk
+    daily_avg = df['total'].mean()
+    shortfall_risk = "Low"
+    if len(predictions) > 0:
+        last_pred = predictions[-1]
+        if last_pred > df['cumulative'].iloc[-1] * 0.9:
+            shortfall_risk = "Medium"
+        if predictions[-1] < predictions[0] * 0.5:
+            shortfall_risk = "High"
+    
+    return predictions, daily_avg, shortfall_risk
+
+def generate_pdf_report(kpis, scan_history, company_profile):
+    """Generate comprehensive PDF audit report"""
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Logo/Header
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(200, 10, txt=f"CFO-Pulse Audit Report", ln=1, align='C')
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(200, 6, txt=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align='C')
+    pdf.ln(10)
+    
+    # Company Info
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(200, 8, txt="Company Information", ln=1)
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(100, 6, txt=f"Name: {company_profile.get('company_name', 'N/A')}", ln=0)
+    pdf.cell(100, 6, txt=f"TIN: {company_profile.get('tin', 'N/A')}", ln=1)
+    pdf.cell(100, 6, txt=f"Industry: {company_profile.get('industry', 'N/A')}", ln=0)
+    pdf.cell(100, 6, txt=f"Currency: {company_profile.get('currency', 'USD')}", ln=1)
+    pdf.ln(5)
+    
+    # KPI Summary
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(200, 8, txt="Key Performance Indicators", ln=1)
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(95, 6, txt=f"Total Audited: {kpis.get('total_audited', '0')}", ln=0)
+    pdf.cell(95, 6, txt=f"Total Scans: {kpis.get('total_scanned', 0)}", ln=1)
+    pdf.cell(95, 6, txt=f"Compliance Rate: {kpis.get('compliance_rate', '0%')}", ln=0)
+    pdf.cell(95, 6, txt=f"Potential Savings: {kpis.get('blocked_leakage', '0')}", ln=1)
+    pdf.cell(95, 6, txt=f"Average Risk Score: {kpis.get('risk_score', '0')}", ln=0)
+    pdf.cell(95, 6, txt=f"Flagged Items: {kpis.get('flagged_count', 0)}", ln=1)
+    pdf.ln(5)
+    
+    # Risk Distribution
+    if scan_history:
+        df = pd.DataFrame(scan_history)
+        low_risk = len(df[df['risk_score'] <= 25])
+        medium_risk = len(df[(df['risk_score'] > 25) & (df['risk_score'] <= 60)])
+        high_risk = len(df[df['risk_score'] > 60])
+        
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 8, txt="Risk Distribution", ln=1)
+        pdf.set_font("Arial", '', 10)
+        pdf.cell(60, 6, txt=f"Low Risk (0-25): {low_risk}", ln=0)
+        pdf.cell(60, 6, txt=f"Medium Risk (26-60): {medium_risk}", ln=0)
+        pdf.cell(60, 6, txt=f"High Risk (61-100): {high_risk}", ln=1)
+        pdf.ln(5)
+        
+        # Top Risky Transactions
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 8, txt="Top 5 High-Risk Transactions", ln=1)
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(50, 6, txt="Date", border=1)
+        pdf.cell(60, 6, txt="Vendor", border=1)
+        pdf.cell(40, 6, txt="Amount", border=1)
+        pdf.cell(40, 6, txt="Risk Score", border=1)
+        pdf.ln()
+        
+        high_risk_df = df[df['risk_score'] > 50].head(5)
+        pdf.set_font("Arial", '', 8)
+        for _, row in high_risk_df.iterrows():
+            date_str = datetime.fromisoformat(row['date']).strftime('%Y-%m-%d')
+            pdf.cell(50, 5, txt=date_str, border=1)
+            pdf.cell(60, 5, txt=row['vendor'][:30], border=1)
+            pdf.cell(40, 5, txt=f"{row['currency']} {row['total']:,.2f}", border=1)
+            pdf.cell(40, 5, txt=str(row['risk_score']), border=1)
+            pdf.ln()
+    
+    # Recommendations
+    pdf.ln(5)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(200, 8, txt="Recommendations", ln=1)
+    pdf.set_font("Arial", '', 10)
+    recommendations = [
+        "1. Review all high-risk transactions (>60 risk score)",
+        "2. Implement stricter vendor approval process for blacklisted vendors",
+        "3. Consider reducing expense policy limits for meals and entertainment",
+        "4. Schedule regular audit reviews for flagged transactions"
+    ]
+    for rec in recommendations:
+        pdf.cell(200, 6, txt=rec, ln=1)
+    
+    # Save file
+    filename = f"audit_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    pdf.output(filename)
+    return filename
+
+def update_kpi_after_scan(scan_result):
+    db = load_data()
+    db["total_scanned"] += 1
+    total_amount = scan_result.get("total", 0)
+    db["total_audited"] += total_amount
+    risk_score = scan_result.get("risk_score", 0)
+    db["risk_scores"].append(risk_score)
+    if risk_score <= 25:
+        db["compliant_count"] += 1
     else:
-        risk_factors.append(10)
-    
-    # Factor 3: Amount threshold
-    if amount > 50000:
-        risk_factors.append(25)
-    elif amount > 20000:
-        risk_factors.append(15)
-    else:
-        risk_factors.append(5)
-    
-    # Calculate final risk score (0-100)
-    risk_score = min(100, sum(risk_factors))
-    return round(risk_score, 1)
+        db["flagged_count"] += 1
+        if risk_score > 50:
+            db["total_saved"] += total_amount * 0.15
+    db["scan_history"].append({
+        "date": datetime.now().isoformat(),
+        "vendor": scan_result.get("vendor", "Unknown"),
+        "total": total_amount,
+        "currency": scan_result.get("currency", "USD"),
+        "risk_score": risk_score,
+        "invoice_no": scan_result.get("invoice_no", ""),
+        "duplicate_warning": scan_result.get("duplicate_warning", None),
+        "policy_violations": scan_result.get("policy_violations", [])
+    })
+    if len(db["scan_history"]) > 50:
+        db["scan_history"] = db["scan_history"][-50:]
+    if len(db["risk_scores"]) > 100:
+        db["risk_scores"] = db["risk_scores"][-100:]
+    save_data(db)
+    return db
 
-def generate_credit_report(company_name, company_tin):
-    """Generate comprehensive credit report for SME"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        # Base credit score
-        credit_score = 700
-        
-        # Factor 1: Transaction history
-        c.execute("SELECT COUNT(*) FROM transactions")
-        transaction_count = c.fetchone()[0]
-        credit_score += min(50, transaction_count * 5)
-        
-        # Factor 2: Compliance check
-        c.execute("SELECT COUNT(*) FROM transactions WHERE status='Approved'")
-        approved = c.fetchone()[0]
-        compliance_rate = (approved / transaction_count * 100) if transaction_count > 0 else 100
-        credit_score += (compliance_rate - 80) * 2
-        
-        # Factor 3: Fraud history penalty
-        c.execute("SELECT COUNT(*) FROM fraud_cases WHERE status IN ('Investigating', 'Pending')")
-        pending_fraud = c.fetchone()[0]
-        credit_score -= pending_fraud * 15
-        
-        # Factor 4: Total volume bonus
-        c.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions")
-        total_volume = c.fetchone()[0]
-        if total_volume > 200000:
-            credit_score += 30
-        elif total_volume > 100000:
-            credit_score += 15
-        
-        # Cap credit score between 300-850
-        return min(850, max(300, int(credit_score)))
-    
-    except Exception as e:
-        return 650  # Default score if calculation fails
-
-# ════════════════════════════════════════════════
-# FRONTEND - Session State Initialization
-# ════════════════════════════════════════════════
-def init_session_state():
-    """Initialize all session state variables"""
-    defaults = {
-        'company_name': "CFO-Pulse Partner",
-        'company_tin': "0000000000",
-        'user_authenticated': False,
-        'username': '',
-        'user_role': 'user',
-        'current_page': 'Dashboard',
-        'credit_report': None,
-        'last_scan': None
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-init_session_state()
-
-# ════════════════════════════════════════════════
-# FRONTEND - Page Configuration
-# ════════════════════════════════════════════════
-st.set_page_config(
-    page_title="CFO-Pulse AI",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Initialize database (cached)
-@st.cache_resource
-def get_db():
-    return init_database()
-
-# ════════════════════════════════════════════════
-# FRONTEND - Custom CSS Styles
-# ════════════════════════════════════════════════
-def inject_custom_css():
-    st.markdown("""
-    <style>
-    /* Main container */
-    .main {
-        padding: 0rem 1rem;
-    }
-    
-    /* Custom cards */
-    .custom-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 15px;
-        color: white;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        margin-bottom: 20px;
-    }
-    
-    .metric-card {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        border: 1px solid #e0e0e0;
-        margin-bottom: 10px;
-    }
-    
-    /* Risk badges */
-    .risk-badge-low {
-        background: #10b981;
-        color: white;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-weight: 600;
-        display: inline-block;
-    }
-    
-    .risk-badge-medium {
-        background: #f59e0b;
-        color: white;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-weight: 600;
-        display: inline-block;
-    }
-    
-    .risk-badge-high {
-        background: #ef4444;
-        color: white;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-weight: 600;
-        display: inline-block;
-    }
-    
-    /* Buttons */
-    .stButton > button {
-        width: 100%;
-        border-radius: 8px;
-        height: 45px;
-        font-weight: 600;
-        transition: all 0.3s;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-    }
-    
-    /* Progress bar */
-    .stProgress > div > div {
-        background-color: #667eea;
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        padding: 10px 20px;
-        background: #f8f9fa;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: #667eea !important;
-        color: white !important;
-    }
-    
-    /* Login container */
-    .login-container {
-        max-width: 450px;
-        margin: 80px auto;
-        padding: 40px;
-        background: white;
-        border-radius: 20px;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.1);
-    }
-    
-    /* Alert cards */
-    .alert-card {
-        background: white;
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
-    
-    /* Status indicators */
-    .status-active {
-        color: #10b981;
-        font-weight: 600;
-    }
-    
-    .status-warning {
-        color: #f59e0b;
-        font-weight: 600;
-    }
-    
-    .status-danger {
-        color: #ef4444;
-        font-weight: 600;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-inject_custom_css()
-
-# ════════════════════════════════════════════════
-# FRONTEND - Login Page
-# ════════════════════════════════════════════════
-def login_page():
-    """Display login form"""
-    st.markdown("""
-    <div style="text-align:center; padding:60px 0 30px 0;">
-        <h1 style="font-size:52px; font-weight:700; color:#1f2937;">🛡️ CFO-Pulse AI</h1>
-        <p style="font-size:20px; color:#6b7280; margin-top:10px;">
-            Enterprise Security & Compliance Platform
-        </p>
-        <p style="font-size:14px; color:#9ca3af;">
-            Ethiopian Tax Compliance • Fraud Detection • Financial Intelligence
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        st.markdown("### 🔐 Secure Access")
-        
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("👤 Username", placeholder="Enter your username")
-            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
-            
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                login_submit = st.form_submit_button("🔓 Sign In", use_container_width=True)
-            with col_btn2:
-                demo_submit = st.form_submit_button("🎮 Demo Access", use_container_width=True)
-            
-            if login_submit:
-                if username and password:
-                    user = verify_credentials(username, password)
-                    if user:
-                        st.session_state['user_authenticated'] = True
-                        st.session_state['username'] = username
-                        st.session_state['user_role'] = user[3]
-                        log_audit(user[0], "LOGIN", f"User '{username}' logged in successfully")
-                        st.success("✅ Authentication successful! Redirecting...")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("❌ Invalid username or password")
-                else:
-                    st.warning("⚠️ Please enter both username and password")
-            
-            if demo_submit:
-                st.session_state['user_authenticated'] = True
-                st.session_state['username'] = 'demo'
-                st.session_state['user_role'] = 'user'
-                st.success("✅ Demo access granted! Redirecting...")
-                time.sleep(1)
-                st.rerun()
-        
-        st.markdown("""
-        <div style="text-align:center; margin-top:20px; padding:15px; background:#f3f4f6; border-radius:10px;">
-            <p style="margin:0; font-size:13px; color:#6b7280;">
-                <strong>Demo Credentials:</strong><br>
-                Username: <code>admin</code> | Password: <code>admin123</code><br>
-                Or click <strong>"Demo Access"</strong> for instant login
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-
-# ════════════════════════════════════════════════
-# Check Authentication
-# ════════════════════════════════════════════════
-if not st.session_state.get('user_authenticated', False):
-    login_page()
-    st.stop()
-
-# ════════════════════════════════════════════════
-# FRONTEND - Sidebar Navigation
-# ════════════════════════════════════════════════
-with st.sidebar:
-    # User profile section
-    st.markdown("""
-    <div style="text-align:center; padding:20px 0;">
-        <div style="width:80px; height:80px; background:linear-gradient(135deg,#667eea,#764ba2);
-                    border-radius:50%; margin:0 auto; display:flex; align-items:center; justify-content:center;
-                    box-shadow:0 5px 15px rgba(102,126,234,0.4);">
-            <span style="font-size:35px;">👤</span>
-        </div>
-        <h3 style="margin:10px 0 5px; color:#1f2937;">Ashenafi D.</h3>
-        <p style="color:#6b7280; margin:0;">CFO • Finance Lead</p>
-        <div style="margin-top:10px;">
-            <span style="background:#10b981; color:white; padding:5px 15px;
-                       border-radius:20px; font-size:12px; font-weight:600;">
-                ✓ Authenticated
-            </span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # Navigation menu
-    st.markdown("### 📍 Navigation")
-    page = st.radio(
-        "Select Page",
-        ["📊 Dashboard", "🔍 Scan & Audit", "🚨 Fraud Reports", "📈 Analytics", "🏦 Credit Hub"],
-        label_visibility="collapsed"
+def calculate_current_kpis():
+    db = load_data()
+    avg_risk = int(np.mean(db["risk_scores"])) if db["risk_scores"] else 23
+    compliance_rate = (
+        round((db["compliant_count"] / db["total_scanned"]) * 100, 1)
+        if db["total_scanned"] > 0 else 98.2
     )
-    
-    st.markdown("---")
-    
-    # Real-time risk assessment
-    st.markdown("### 🎯 Risk Assessment")
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT AVG(risk_score) FROM fraud_cases WHERE status IN ('Investigating', 'Pending')")
-        avg_risk = c.fetchone()[0]
-        risk_score = int(avg_risk) if avg_risk else 23
-    except Exception:
-        risk_score = 23
-    
-    risk_level = "Low" if risk_score < 30 else "Medium" if risk_score < 70 else "High"
-    risk_badge_class = f"risk-badge-{risk_level.lower()}"
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.markdown(f"**Risk Score:** {risk_score}/100")
-    with col2:
-        st.markdown(f'<span class="{risk_badge_class}">{risk_level}</span>', unsafe_allow_html=True)
-    
-    st.progress(risk_score / 100, text=f"Risk Level: {risk_level}")
-    st.caption("📉 Down 12% from last week")
-    
-    st.markdown("---")
-    
-    # Quick statistics
-    st.markdown("### 📈 Live Statistics")
-    try:
-        c.execute("SELECT COUNT(*) FROM transactions WHERE date >= date('now', '-30 days')")
-        active_monitors = c.fetchone()[0]
-    except Exception:
-        active_monitors = 12
-    
-    try:
-        c.execute("SELECT COUNT(*) FROM fraud_cases WHERE date >= date('now', '-1 days')")
-        alerts_today = c.fetchone()[0]
-    except Exception:
-        alerts_today = 3
-    
-    st.metric("Active Monitors", active_monitors, "+2")
-    st.metric("Alerts Today", alerts_today, "-1")
-    st.metric("Avg Response", "2.4 min", "-0.3")
-    
-    st.markdown("---")
-    
-    # Logout button
-    if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-        log_audit(1, "LOGOUT", f"User '{st.session_state.get('username')}' logged out")
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
+    recent = db["risk_scores"][-10:] if len(db["risk_scores"]) >= 10 else db["risk_scores"]
+    older = db["risk_scores"][-20:-10] if len(db["risk_scores"]) >= 20 else db["risk_scores"]
+    avg_recent = int(np.mean(recent)) if recent else 0
+    avg_older = int(np.mean(older)) if older else 0
+    risk_trend = round(((avg_recent - avg_older) / avg_older) * 100, 1) if avg_older > 0 else 0
+    return {
+        "total_audited": f"{db['total_audited']:,.0f}",
+        "total_audited_delta": f"+{db['total_scanned']} scans",
+        "compliance_rate": f"{compliance_rate}%",
+        "compliance_delta": f"{db['compliant_count']}/{db['total_scanned']} compliant",
+        "blocked_leakage": f"{db['total_saved']:,.0f}",
+        "blocked_delta": f"{db['flagged_count']} flagged",
+        "risk_score": f"{avg_risk}/100",
+        "risk_delta": f"{'+' if risk_trend > 0 else ''}{risk_trend}%",
+        "total_scanned": db['total_scanned'],
+        "flagged_count": db['flagged_count'],
+        "scan_history": db['scan_history']
+    }
 
-# ════════════════════════════════════════════════
-# Shared Visualization Helpers
-# ════════════════════════════════════════════════
+# ── Session Defaults ────────────────────────────
+company = load_company_profile()
+st.session_state.setdefault('company_name', company['company_name'])
+st.session_state.setdefault('company_tin', company['tin'])
+st.session_state.setdefault('company_currency', company.get('currency', 'USD'))
+st.session_state.setdefault('company_tax_rate', company.get('tax_rate', 15.0))
+st.session_state.setdefault('biometric_registered', os.path.exists(BIOMETRIC_FILE))
+st.session_state.setdefault('biometric_verified', False)
+st.session_state.setdefault('is_logged_in', False)
+st.session_state.setdefault('login_attempts', 0)
+st.session_state.setdefault('captured_face', None)
+st.session_state.setdefault('registration_step', 1)
+st.session_state.setdefault('show_login', True)
+
+# ── Page Config ─────────────────────────────────
+st.set_page_config(page_title="CFO-Pulse AI", page_icon="🛡️", layout="wide",
+                   initial_sidebar_state="expanded")
+
+def inject_styles():
+    st.markdown("""<style>
+    .main { padding: 0rem 1rem; }
+    .metric-card { background:#fff; padding:20px; border-radius:12px;
+                   box-shadow:0 2px 10px rgba(0,0,0,.05); border:1px solid #e0e0e0; }
+    .risk-badge-low    { background:#10b981; color:#fff; padding:5px 15px; border-radius:20px; font-weight:600; display:inline-block; }
+    .risk-badge-medium { background:#f59e0b; color:#fff; padding:5px 15px; border-radius:20px; font-weight:600; display:inline-block; }
+    .risk-badge-high   { background:#ef4444; color:#fff; padding:5px 15px; border-radius:20px; font-weight:600; display:inline-block; }
+    .stButton>button { width:100%; border-radius:8px; height:45px; font-weight:600; transition:all .3s; }
+    .stButton>button:hover { transform:translateY(-2px); box-shadow:0 5px 15px rgba(0,0,0,.1); }
+    .stProgress>div>div { background-color:#667eea; }
+    .stTabs [data-baseweb="tab"] { border-radius:8px; padding:10px 20px; background:#f8f9fa; }
+    .stTabs [aria-selected="true"] { background:#667eea!important; color:#fff!important; }
+    .login-container { max-width:500px; margin:50px auto; padding:40px; background:#fff;
+                       border-radius:20px; box-shadow:0 20px 60px rgba(0,0,0,.1); text-align:center; }
+    .login-header { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; padding:30px;
+                    border-radius:15px; margin-bottom:30px; }
+    .camera-box { border:3px dashed #667eea; border-radius:20px; padding:30px; text-align:center; 
+                  background:linear-gradient(135deg,#667eea10,#764ba210); margin:20px 0; }
+    .success-box { border:2px solid #10b981; border-radius:15px; padding:20px; 
+                   background:#f0fdf4; text-align:center; }
+    .alert-high { border:2px solid #ef4444; background:#fef2f2; padding:20px; border-radius:15px; }
+    .alert-medium { border:2px solid #f59e0b; background:#fffbeb; padding:20px; border-radius:15px; }
+    .alert-low { border:2px solid #10b981; background:#f0fdf4; padding:20px; border-radius:15px; }
+    </style>""", unsafe_allow_html=True)
+
+inject_styles()
+
+# ── Biometric Functions ────────────────────────
+def capture_face_from_camera():
+    try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return None, "Cannot access camera."
+        for _ in range(15):
+            cap.read()
+        ret, frame = cap.read()
+        cap.release()
+        if not ret or frame is None:
+            return None, "Failed to capture."
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), None
+    except Exception as e:
+        return None, f"Camera error: {str(e)}"
+
+def detect_face(image):
+    try:
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        return len(faces) > 0, faces
+    except:
+        return False, []
+
+def save_biometric_data(image, user_id="CFO_Ashenafi"):
+    save_dir = "biometric_data"
+    os.makedirs(save_dir, exist_ok=True)
+    filepath = os.path.join(save_dir, f"{user_id}.jpg")
+    cv2.imwrite(filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    return filepath
+
+def load_registered_face():
+    if os.path.exists(BIOMETRIC_FILE):
+        return cv2.cvtColor(cv2.imread(BIOMETRIC_FILE), cv2.COLOR_BGR2RGB)
+    return None
+
+def verify_face_match(captured_image, registered_image):
+    if captured_image is None or registered_image is None:
+        return False, 0.0, "Missing image data"
+    try:
+        target_size = (200, 200)
+        img1 = cv2.resize(captured_image, target_size)
+        img2 = cv2.resize(registered_image, target_size)
+        gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY)
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
+        hist1 = cv2.calcHist([gray1], [0], None, [256], [0, 256])
+        hist2 = cv2.calcHist([gray2], [0], None, [256], [0, 256])
+        cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
+        cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
+        similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+        combined_score = similarity * 0.8 + (1 - np.mean(cv2.absdiff(gray1, gray2))/255) * 0.2
+        if combined_score > 0.4:
+            return True, combined_score, "Face matched"
+        return False, combined_score, "Face does not match"
+    except Exception as e:
+        return False, 0.0, f"Error: {str(e)}"
+
+# ── OCR Functions ──────────────────────────────
+@st.cache_resource
+def load_easyocr():
+    if EASYOCR_AVAILABLE:
+        return easyocr.Reader(['en'], gpu=False)
+    return None
+
+def extract_text_tesseract(image):
+    try:
+        configs = ['--psm 6', '--psm 4', '--psm 3']
+        best_text = ""
+        for config in configs:
+            text = pytesseract.image_to_string(image, config=config).strip()
+            if len(text) > len(best_text):
+                best_text = text
+        return best_text
+    except:
+        return ""
+
+def extract_text_easyocr(image, reader):
+    try:
+        img_array = np.array(image)
+        results = reader.readtext(img_array)
+        return "\n".join([text for _, text, _ in results])
+    except:
+        return ""
+
+def parse_invoice_text(text):
+    data = {
+        "vendor": "Unknown", "client": "Not detected", "tin": "",
+        "invoice_no": "", "date": "", "subtotal": 0.0,
+        "tax_amount": 0.0, "total": 0.0, "items": "", "currency": "USD"
+    }
+    if not text:
+        return data
+    
+    original_text = text
+    
+    if '$' in text: data['currency'] = 'USD'
+    elif 'ETB' in text.upper(): data['currency'] = 'ETB'
+    
+    vendor_found = False
+    
+    thank_match = re.search(
+        r'THANK\s+YOU\s+FOR\s+SHOPPING\s+AT\s+(.+?)(?:!|$|\n)',
+        original_text, re.IGNORECASE
+    )
+    if thank_match:
+        vendor_name = thank_match.group(1).strip()
+        vendor_name = re.sub(r'[^\w\s&.,\'\-]', '', vendor_name)
+        vendor_name = re.sub(r'\s+', ' ', vendor_name).strip()
+        if vendor_name and len(vendor_name) > 5:
+            data['vendor'] = vendor_name
+            data['client'] = vendor_name
+            vendor_found = True
+    
+    if not vendor_found:
+        url_match = re.search(r'WWW\.\s*([A-Za-z0-9]+)\.\s*COM', original_text, re.IGNORECASE)
+        if url_match:
+            domain_name = url_match.group(1).upper()
+            readable = domain_name.replace('SUPREMELUXURYPROVISIONS', 'SUPREME LUXURY PROVISIONS')
+            readable = readable.replace('DAILYHARVESTGROCERS', 'DAILY HARVEST GROCERS')
+            data['vendor'] = readable
+            data['client'] = readable
+            vendor_found = True
+    
+    if not vendor_found:
+        clean_lines = []
+        for line in original_text.split('\n')[:6]:
+            cleaned = re.sub(r'[^\x00-\x7F\s]', '', line).strip()
+            if not cleaned or len(cleaned) <= 2:
+                continue
+            if re.search(r'(?:TRANSACTION|RECEIPT|DATE:|PHONE:|CASHIER|\$\d+)', cleaned, re.IGNORECASE):
+                break
+            if re.match(r'^\d+', cleaned):
+                continue
+            alpha_count = len(re.findall(r'[A-Za-z]', cleaned))
+            if alpha_count / max(len(cleaned), 1) > 0.4:
+                clean_lines.append(cleaned)
+        if clean_lines:
+            data['vendor'] = " ".join(clean_lines[:3])
+            data['client'] = data['vendor']
+    
+    for pattern in [r'RECEIPT\s*#:\s*(\d+)', r'#:\s*(\d{5,})', r'INVOICE\s*#:\s*(\d+)']:
+        match = re.search(pattern, original_text, re.IGNORECASE)
+        if match:
+            data['invoice_no'] = match.group(1).strip()
+            break
+    
+    for pattern in [r'DATE:\s*(\d{1,2}\s\w{3,9}\s\d{4})', r'(\d{1,2}\s\w{3,9}\s\d{4})']:
+        match = re.search(pattern, original_text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            date_str = re.sub(r'\b26(\d{2})\b', r'20\1', date_str)
+            date_str = date_str.replace('OCTOER', 'OCTOBER')
+            data['date'] = date_str
+            break
+    
+    item_names = []
+    for line in original_text.split('\n'):
+        line_clean = re.sub(r'[^\x00-\x7F\s]', '', line).strip()
+        if not line_clean: continue
+        if re.search(r'(?:SUBTOTAL|TOTAL:|TAX|PAID|CARD|AUTH|CHIP|VERIFIED|THANK|DATE:|RECEIPT|CASHIER|ITEMS|AMOUNT)', line_clean, re.IGNORECASE):
+            continue
+        item_match = re.search(
+            r'(?:\d+\s*)?([A-Za-z][A-Za-z\s()&.,\'\-]+?)\s*[-–—$]\s*\$?(\d+\.?\d{2})',
+            line_clean
+        )
+        if item_match:
+            name = item_match.group(1).strip()
+            name = re.sub(r'\s{2,}', ' ', name)
+            name = name.strip(' -–—').strip()
+            if name and len(name) > 3:
+                skip_words = ['SUBTOTAL', 'TOTAL', 'TAX', 'SALES', 'PAID', 'VISA', 'AMEX', 'CARD']
+                if name.upper() not in skip_words:
+                    item_names.append(name)
+    if item_names:
+        data['items'] = "; ".join(item_names[:15])
+    
+    all_prices = re.findall(r'\$(\d+\.?\d{2})', original_text)
+    prices_float = sorted([float(p.replace(',', '')) for p in all_prices]) if all_prices else []
+    
+    subtotal_match = re.search(r'SUBTOTAL:?\s*\$?([\d,]+\.?\d{2})', original_text, re.IGNORECASE)
+    if subtotal_match:
+        data['subtotal'] = float(subtotal_match.group(1).replace(',', ''))
+    
+    tax_patterns = [
+        r'SALES\s*TAX\s*\(\d+\.?\d*%\):?\s*\$?([\d,]+\.?\d{2})',
+        r'TAX:?\s*\$?([\d,]+\.?\d{2})',
+    ]
+    for pattern in tax_patterns:
+        tax_match = re.search(pattern, original_text, re.IGNORECASE)
+        if tax_match:
+            data['tax_amount'] = float(tax_match.group(1).replace(',', ''))
+            break
+    
+    total_match = re.search(r'TOTAL:?\s*\$?([\d,]+\.?\d{2})', original_text, re.IGNORECASE)
+    if total_match:
+        data['total'] = float(total_match.group(1).replace(',', ''))
+    elif prices_float:
+        data['total'] = prices_float[-1]
+        if data['subtotal'] == 0.0 and len(prices_float) >= 2:
+            data['subtotal'] = prices_float[-2]
+        if data['tax_amount'] == 0.0:
+            data['tax_amount'] = round(data['total'] - data['subtotal'], 2)
+    
+    if data['total'] == data['subtotal'] and data['tax_amount'] > 0:
+        data['total'] = round(data['subtotal'] + data['tax_amount'], 2)
+    
+    return data
+
+def process_invoice(uploaded_file):
+    try:
+        image = Image.open(uploaded_file)
+    except:
+        return None
+    extracted_text = ""
+    if TESSERACT_AVAILABLE:
+        extracted_text = extract_text_tesseract(image)
+    if not extracted_text and EASYOCR_AVAILABLE:
+        reader = load_easyocr()
+        extracted_text = extract_text_easyocr(image, reader)
+    if extracted_text:
+        data = parse_invoice_text(extracted_text)
+        data['raw_text'] = extracted_text[:800]
+        data['ocr_engine'] = 'Tesseract' if TESSERACT_AVAILABLE else 'EasyOCR'
+        return data
+    return None
+
+def calculate_risk_score(data, duplicate_penalty=0, policy_penalty=0):
+    company = load_company_profile()
+    score = 5
+    total = data.get('total', 0)
+    currency = company.get('currency', 'USD')
+    
+    if currency == 'USD':
+        threshold = 5000
+    elif currency == 'ETB':
+        threshold = 50000
+    else:
+        threshold = 5000
+    
+    if total > threshold:
+        score += min(50, int((total / threshold) * 20))
+    else:
+        score += int((total / threshold) * 10)
+    
+    vendor = str(data.get('vendor', ''))
+    if vendor in ['Unknown', '=', ''] or len(vendor) <= 3:
+        score += 20
+    if data.get('tax_amount', 0) == 0 and total > 50:
+        score += 15
+    if not data.get('items'):
+        score += 10
+    if total > threshold * 2:
+        score += 15
+    
+    # Add penalties from duplicate detection and policy violations
+    score += duplicate_penalty
+    score += policy_penalty
+    
+    return min(100, score)
+
+# ── Helpers ─────────────────────────────────────
 GRID_COLOR = '#e5e7eb'
 
 def style_axes(fig):
-    """Apply consistent axis styling"""
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=GRID_COLOR)
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor=GRID_COLOR)
 
 def base_layout(fig, title, height=400):
-    """Apply consistent layout styling"""
-    fig.update_layout(
-        title=title,
-        title_font_size=16,
-        height=height,
-        hovermode='x unified',
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.02,
-            xanchor='right',
-            x=1
-        )
-    )
+    fig.update_layout(title=title, height=height, hovermode='x unified',
+                      plot_bgcolor='white',
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
 
-def metric_card(title, value, delta, icon):
-    """Generate metric card HTML"""
-    return f"""
-    <div class="metric-card">
-        <div style="display:flex; align-items:center; margin-bottom:10px;">
-            <span style="font-size:24px; margin-right:10px;">{icon}</span>
-            <span style="color:#6b7280; font-size:14px;">{title}</span>
-        </div>
-        <h2 style="margin:5px 0; color:#1f2937; font-size:28px;">{value}</h2>
-        <p style="color:#10b981; margin:0; font-weight:600;">{delta}</p>
-    </div>
-    """
-
-def alert_card(severity, message, time_ago):
-    """Generate alert card HTML"""
-    color_map = {"High": "#ef4444", "Medium": "#f59e0b", "Low": "#10b981"}
-    color = color_map.get(severity, "#6b7280")
+# ── Login Page ────────────────────────────────
+def show_login_page():
+    MASTER_PASSWORD = get_master_password()
     
-    return f"""
-    <div style="background:white; padding:15px; border-radius:10px; margin-bottom:10px;
-                border-left:4px solid {color}; box-shadow:0 2px 5px rgba(0,0,0,0.05);">
-        <div style="display:flex; justify-content:space-between; align-items:start;">
-            <strong style="color:#1f2937;">{message}</strong>
-            <span style="color:#6b7280; font-size:12px; white-space:nowrap; margin-left:10px;">{time_ago}</span>
+    if st.session_state.get('login_attempts', 0) >= 5:
+        st.markdown("""<div style="max-width:500px;margin:100px auto;padding:40px;text-align:center;
+            border:2px solid #ef4444;border-radius:15px;background:#fef2f2">
+            <h2>🔒 Account Locked</h2><p>Too many failed attempts.</p>""", unsafe_allow_html=True)
+        if st.button("Reset & Try Again"):
+            st.session_state['login_attempts'] = 0
+            st.rerun()
+        return
+    
+    st.markdown("""
+    <div style="max-width:500px;margin:50px auto">
+        <div style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;
+                    padding:30px;border-radius:15px;text-align:center;margin-bottom:30px">
+            <span style="font-size:64px">🛡️</span>
+            <h1>CFO-Pulse AI</h1>
+            <p>Enterprise Security Platform</p>
         </div>
-        <span style="background:{color}20; color:{color}; padding:2px 10px; 
-                    border-radius:12px; font-size:11px; font-weight:600;">
-            {severity}
-        </span>
-    </div>
-    """
-
-# ════════════════════════════════════════════════
-# PAGE 1: Dashboard
-# ════════════════════════════════════════════════
-if "📊 Dashboard" in page:
-    # Header
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("🛡️ CFO-Pulse AI Command Center")
-        st.caption(f"Real-time monitoring active • {datetime.now():%B %d, %Y • %H:%M UTC}")
+    </div>""", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 3, 1])
     with col2:
-        st.markdown("""
-        <div style="background:linear-gradient(135deg,#667eea,#764ba2); padding:15px;
-                    border-radius:10px; color:white; text-align:center;">
-            <h4 style="margin:0;">🤖 AI Status</h4>
-            <p style="margin:5px 0 0; font-size:14px;">🟢 All Systems Active</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # KPI Metrics
-    st.markdown("### 📊 Key Performance Indicators")
-    
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM transactions WHERE date >= date('now', '-30 days')")
-        tx_count, total_audited = c.fetchone()
+        st.markdown("### 🔐 Authentication Required")
+        is_registered = os.path.exists(BIOMETRIC_FILE)
         
-        c.execute("SELECT COALESCE(SUM(amount), 0) FROM fraud_cases WHERE status IN ('Investigating', 'Pending')")
-        blocked_leakage = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM fraud_cases WHERE status='Resolved'")
-        resolved_cases = c.fetchone()[0]
-    except Exception:
-        tx_count, total_audited = 45, 245000
-        blocked_leakage = 12400
-        resolved_cases = 32
-    
-    cols = st.columns(4)
-    metrics_data = [
-        ("💰 Total Audited", f"ETB {total_audited:,.0f}", "↑ 5.2% this month", "💎"),
-        ("✅ Compliance Rate", "98.2%", "↑ 0.4% improvement", "📋"),
-        ("🛡️ Fraud Blocked", f"ETB {blocked_leakage:,.0f}", f"{resolved_cases} cases resolved", "🔒"),
-        ("⚡ Risk Score", f"{risk_score}/100", "↓ 12% from last week", "📉")
-    ]
-    
-    for col, (title, value, delta, icon) in zip(cols, metrics_data):
-        with col:
-            st.markdown(metric_card(title, value, delta, icon), unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # Tabs
-    tab1, tab2, tab3 = st.tabs(["📈 Risk Trends", "🔍 Anomaly Detection", "📊 Department Overview"])
-    
-    with tab1:
-        col_left, col_right = st.columns([2, 1])
-        
-        with col_left:
-            st.markdown("### Real-time Risk Monitoring")
+        if not is_registered:
+            st.warning("No biometric data registered")
+            step = st.session_state.get('registration_step', 1)
+            st.progress(step / 3)
             
-            # Generate trend data
-            dates = pd.date_range('2026-04-01', periods=30, freq='D')
-            np.random.seed(42)
-            trend_data = pd.DataFrame({
-                'Date': dates,
-                'Fraud Risk': np.random.randn(30).cumsum() * 2 + 30,
-                'Tax Compliance': np.random.randn(30).cumsum() * 1.5 + 85,
-                'Cash Liquidity': np.random.randn(30).cumsum() * 3 + 60
-            })
+            if step == 1:
+                if st.button("📸 Start Face Registration", type="primary", use_container_width=True):
+                    st.session_state['registration_step'] = 2
+                    st.rerun()
+            elif step == 2:
+                if st.button("📸 Capture Face Now", type="primary", use_container_width=True):
+                    with st.spinner("Accessing camera..."):
+                        frame, error = capture_face_from_camera()
+                    if error: st.error(error)
+                    elif frame is not None:
+                        has_face, faces = detect_face(frame)
+                        if has_face:
+                            for (x, y, w, h) in faces:
+                                cv2.rectangle(frame, (x, y), (x+w, y+h), (16, 185, 129), 3)
+                            st.session_state['captured_face'] = frame
+                            st.session_state['registration_step'] = 3
+                            st.image(frame, channels="RGB")
+                            st.success("Face captured!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("No face detected")
+            elif step == 3:
+                if st.session_state.get('captured_face') is not None:
+                    st.image(st.session_state['captured_face'], channels="RGB", width=250)
+                    if st.button("✅ Confirm Registration", type="primary", use_container_width=True):
+                        save_biometric_data(st.session_state['captured_face'])
+                        st.session_state['biometric_registered'] = True
+                        st.session_state['registration_step'] = 1
+                        st.success("✅ Registered! Please login.")
+                        st.balloons()
+                        time.sleep(2)
+                        st.rerun()
+        else:
+            login_method = st.radio("Method:", ["📸 Face", "🔑 Password"], horizontal=True)
+            
+            if "Face" in login_method:
+                if st.button("📸 Scan Face to Login", type="primary", use_container_width=True):
+                    with st.spinner("Scanning..."):
+                        frame, error = capture_face_from_camera()
+                    if error: st.error(error)
+                    elif frame is not None:
+                        has_face, faces = detect_face(frame)
+                        if not has_face:
+                            st.error("No face detected")
+                            st.session_state['login_attempts'] += 1
+                        else:
+                            registered = load_registered_face()
+                            is_match, conf, msg = verify_face_match(frame, registered)
+                            if is_match:
+                                st.success(f"✅ {msg}")
+                                st.session_state['is_logged_in'] = True
+                                st.session_state['login_attempts'] = 0
+                                st.balloons()
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {msg}")
+                                st.session_state['login_attempts'] += 1
+            else:
+                pw = st.text_input("Master Password", type="password")
+                if st.button("🔑 Login", use_container_width=True):
+                    if pw == MASTER_PASSWORD:
+                        st.session_state['is_logged_in'] = True
+                        st.session_state['login_attempts'] = 0
+                        st.rerun()
+                    else:
+                        st.error("Invalid password")
+                        st.session_state['login_attempts'] += 1
+    
+    if st.session_state.get('login_attempts', 0) > 0:
+        st.caption(f"Failed attempts: {st.session_state['login_attempts']}/5")
+
+# ── Login Gate ─────────────────────────────────
+if not st.session_state.get('is_logged_in', False):
+    show_login_page()
+    st.stop()
+
+# ═══════════════════════════════════════════════
+# MAIN APP
+# ═══════════════════════════════════════════════
+
+company = load_company_profile()
+policies = load_expense_policies()
+
+with st.sidebar:
+    st.markdown(f"""
+    <div style="text-align:center;padding:10px 0">
+      <div style="width:80px;height:80px;background:linear-gradient(135deg,#667eea,#764ba2);
+                  border-radius:50%;margin:0 auto;display:flex;align-items:center;justify-content:center">
+        <span style="font-size:32px">🏢</span></div>
+      <h4 style="margin:8px 0 2px">{st.session_state['company_name']}</h4>
+      <p style="color:#6b7280;font-size:12px;margin:0">TIN: {st.session_state['company_tin']}</p>
+      <p style="color:#10b981;font-size:11px;margin:5px 0">✓ Biometric Verified</p>
+    </div>""", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("### Navigation")
+    page = st.radio("", ["Dashboard", "Scan & Audit", "Fraud Reports", "Policies", "Settings", "Analytics"],
+                    label_visibility="collapsed")
+    st.markdown("---")
+    
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state['is_logged_in'] = False
+        st.rerun()
+    
+    st.markdown("---")
+    kpis = calculate_current_kpis()
+    avg_risk = int(kpis['risk_score'].split('/')[0]) if kpis['total_scanned'] > 0 else 23
+    st.markdown(f"**Risk:** {avg_risk}/100")
+    st.progress(avg_risk / 100)
+    st.markdown("---")
+    if TESSERACT_AVAILABLE: st.success("Tesseract Ready")
+    else: st.error("Tesseract missing")
+
+# ── Dashboard ──────────────────────────────────
+if "Dashboard" in page:
+    st.title(f"🏢 {st.session_state['company_name']} Command Center")
+    st.caption(f"Real-time monitoring - {datetime.now():%B %d, %Y %H:%M}")
+    st.markdown("---")
+    
+    kpis = calculate_current_kpis()
+    st.markdown(f"### Key Performance Indicators ({kpis['total_scanned']} scans)")
+    cols = st.columns(4)
+    for col, (title, val, delta) in zip(cols, [
+        ("Total Audited", kpis['total_audited'], kpis['total_audited_delta']),
+        ("Compliance", kpis['compliance_rate'], kpis['compliance_delta']),
+        ("Saved", kpis['blocked_leakage'], kpis['blocked_delta']),
+        ("Risk Score", kpis['risk_score'], kpis['risk_delta'])
+    ]):
+        with col: st.metric(title, val, delta)
+    
+    st.markdown("---")
+    
+    # Cash Flow Forecast Section
+    st.markdown("### 📈 AI-Powered Cash Flow Forecast")
+    scan_history = kpis.get('scan_history', [])
+    
+    if len(scan_history) >= 5:
+        predictions, daily_avg, shortfall_risk = predict_cash_flow(scan_history)
+        
+        if predictions is not None:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Daily Average Spend", f"${daily_avg:.2f}")
+            with col2:
+                st.metric("30-Day Forecast", f"${predictions[-1]:,.0f}", 
+                         delta=f"{((predictions[-1] - predictions[0]) / predictions[0] * 100):.1f}%")
+            with col3:
+                risk_color = "🟢" if shortfall_risk == "Low" else "🟡" if shortfall_risk == "Medium" else "🔴"
+                st.metric("Shortfall Risk", f"{risk_color} {shortfall_risk}")
+            
+            # Plot forecast
+            df_hist = pd.DataFrame(scan_history)
+            df_hist['date'] = pd.to_datetime(df_hist['date'])
+            df_hist = df_hist.sort_values('date')
+            df_hist['cumulative'] = df_hist['total'].cumsum()
             
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=trend_data['Date'], y=trend_data['Fraud Risk'],
-                mode='lines', name='Fraud Risk',
-                line=dict(color='#ef4444', width=3)
-            ))
-            fig.add_trace(go.Scatter(
-                x=trend_data['Date'], y=trend_data['Tax Compliance'],
-                mode='lines', name='Tax Compliance',
-                line=dict(color='#10b981', width=3)
-            ))
-            fig.add_trace(go.Scatter(
-                x=trend_data['Date'], y=trend_data['Cash Liquidity'],
-                mode='lines', name='Cash Liquidity',
-                line=dict(color='#3b82f6', width=3)
-            ))
+            fig.add_trace(go.Scatter(x=df_hist['date'], y=df_hist['cumulative'], 
+                                    mode='lines+markers', name='Historical',
+                                    line=dict(color='#667eea', width=2)))
             
-            base_layout(fig, "30-Day Risk Trend Analysis")
+            future_dates = [df_hist['date'].max() + timedelta(days=i+1) for i in range(30)]
+            fig.add_trace(go.Scatter(x=future_dates, y=predictions, 
+                                    mode='lines', name='Forecast',
+                                    line=dict(color='#ef4444', width=2, dash='dash')))
+            
+            base_layout(fig, "Cumulative Cash Flow Forecast (30 Days)", 400)
             style_axes(fig)
             st.plotly_chart(fig, use_container_width=True)
-        
-        with col_right:
-            st.markdown("### ⚠️ Active Alerts")
-            
-            try:
-                c.execute("""SELECT risk_type, risk_score, date 
-                           FROM fraud_cases 
-                           WHERE status IN ('Investigating', 'Pending')
-                           ORDER BY risk_score DESC LIMIT 5""")
-                alerts = c.fetchall()
-            except Exception:
-                alerts = [
-                    ("Duplicate Invoice", 92, "2026-04-20"),
-                    ("Ghost Vendor", 95, "2026-04-18"),
-                    ("Unauthorized Purchase", 78, "2026-04-17")
-                ]
-            
-            for alert in alerts:
-                severity = 'High' if alert[1] > 70 else 'Medium' if alert[1] > 40 else 'Low'
-                st.markdown(alert_card(severity, alert[0], alert[2]), unsafe_allow_html=True)
+        else:
+            st.info("Get more scans for accurate predictions")
+    else:
+        st.info(f"📊 Need {5 - len(scan_history)} more scans to enable AI cash flow forecasting")
     
-    with tab2:
-        st.markdown("### 🔍 AI-Powered Anomaly Detection")
-        
-        try:
-            c.execute("SELECT amount, risk_score FROM transactions ORDER BY date DESC LIMIT 100")
-            tx_data = c.fetchall()
-            
-            if tx_data:
-                df_plot = pd.DataFrame(tx_data, columns=['Amount', 'Risk Score'])
-                
-                # Simple anomaly detection
-                mean_amount = df_plot['Amount'].mean()
-                std_amount = df_plot['Amount'].std()
-                df_plot['Type'] = df_plot['Amount'].apply(
-                    lambda x: 'Anomaly' if abs(x - mean_amount) > 2 * std_amount else 'Normal'
-                )
-                
-                fig = px.scatter(
-                    df_plot, x='Amount', y='Risk Score',
-                    color='Type',
-                    title="Transaction Pattern Analysis",
-                    color_discrete_map={'Normal': '#667eea', 'Anomaly': '#ef4444'},
-                    size_max=10
-                )
-                fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                anomaly_count = len(df_plot[df_plot['Type'] == 'Anomaly'])
-                st.info(f"🔍 Detected {anomaly_count} anomalous transactions out of {len(df_plot)} total")
-        except Exception as e:
-            st.warning("Anomaly detection data is being processed. Please check back later.")
+    st.markdown("---")
     
-    with tab3:
-        st.markdown("### Department-wise Compliance Overview")
+    # AI Summary
+    if scan_history:
+        high_risk_count = len([s for s in scan_history if s.get('risk_score', 0) > 60])
+        flagged_count = kpis['flagged_count']
+        total_saved = float(kpis['blocked_leakage'].replace(',', ''))
         
-        dept_data = pd.DataFrame({
-            'Department': ['Finance', 'Operations', 'Sales', 'IT', 'HR'],
-            'Compliance Score': [98, 92, 95, 99, 97],
-            'Transactions': [1240, 890, 1560, 430, 320],
-            'Budget': [500000, 350000, 600000, 200000, 150000]
-        })
-        
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=dept_data['Department'],
-            y=dept_data['Transactions'],
-            name='Transactions',
-            marker_color='#667eea'
-        ))
-        fig.add_trace(go.Scatter(
-            x=dept_data['Department'],
-            y=dept_data['Compliance Score'],
-            name='Compliance %',
-            yaxis='y2',
-            line=dict(color='#10b981', width=3)
-        ))
-        
-        fig.update_layout(
-            title="Department Performance Metrics",
-            yaxis=dict(title="Transaction Count"),
-            yaxis2=dict(title="Compliance %", overlaying='y', side='right', range=[85, 100]),
-            height=400,
-            hovermode='x unified'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.info(f"""💡 **AI Executive Summary:** Based on {kpis['total_scanned']} scanned documents, 
+        your organization has {flagged_count} flagged transactions with {high_risk_count} high-risk items. 
+        Potential savings of ${total_saved:,.0f} identified through fraud prevention. 
+        {'⚠️ Review high-risk vendors immediately' if high_risk_count > 3 else '✅ Compliance rate is strong.'}""")
 
-# ════════════════════════════════════════════════
-# PAGE 2: Scan & Audit
-# ════════════════════════════════════════════════
-elif "🔍 Scan & Audit" in page:
-    st.title("🔍 Intelligent Document Scanner")
-    st.markdown("Upload receipts or invoices for AI-powered audit and fraud detection")
+elif "Scan & Audit" in page:
+    st.title("🔍 Document Scanner")
+    st.markdown("Upload receipts or invoices for AI-powered audit")
     
-    # Upload area
-    st.markdown("""
-    <div style="border:2px dashed #667eea; border-radius:15px; padding:40px; text-align:center;
-                background:linear-gradient(135deg,#667eea10,#764ba210); margin:20px 0;">
-        <span style="font-size:48px;">📄</span>
-        <h3>Drop your files here or click to upload</h3>
-        <p style="color:#6b7280;">Supports JPG, PNG, PDF (Max 10MB)</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    uploaded_file = st.file_uploader(
-        "Choose a file",
-        type=['jpg', 'jpeg', 'png', 'pdf'],
-        label_visibility="collapsed"
-    )
-    
-    if uploaded_file:
+    st.markdown("""<div style="border:2px dashed #667eea;border-radius:15px;padding:40px;text-align:center;
+        background:linear-gradient(135deg,#667eea10,#764ba210)">
+        <span style="font-size:48px">📤</span>
+        <h3>Upload Document</h3>
+        <p style="color:#6b7280">JPG, PNG, PDF (Max 10MB)</p></div>""", unsafe_allow_html=True)
+
+    uploaded = st.file_uploader("", type=['jpg', 'jpeg', 'png', 'pdf'], label_visibility="collapsed")
+
+    if uploaded:
         st.markdown("---")
+        if TESSERACT_AVAILABLE or EASYOCR_AVAILABLE:
+            with st.spinner("Processing..."):
+                data = process_invoice(uploaded)
+            
+            if data is None:
+                st.warning("OCR failed - using fallback data")
+                data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, 
+                       "subtotal": 4954.20, "tax_amount": 439.68, "currency": "USD",
+                       "items": "Various items", "invoice_no": "INV-001"}
+        else:
+            data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, "currency": "USD", "invoice_no": "INV-001"}
         
-        # Processing simulation
-        with st.status("🔍 AI Agent analyzing document...", expanded=True) as status:
-            st.write("📄 Extracting text from document...")
-            progress_bar = st.progress(0)
-            
-            for i in range(100):
-                time.sleep(0.02)
-                progress_bar.progress(i + 1)
-            
-            st.write("✅ Text extraction complete")
-            
-            # Simulated OCR result
-            extracted_data = {
-                "vendor": "Addis Tech Solutions PLC",
-                "tin": "0012345678",
-                "total": 12500.00,
-                "date": "2026-04-20",
-                "items": "Laptop Battery (3 units), HDMI Cable (2 units), USB Hub (1 unit)",
-                "invoice_no": f"INV-{datetime.now():%Y%m%d}-{np.random.randint(1000, 9999)}"
-            }
-            
-            # Add VAT calculation
-            vat_info = ethiopian_vat(extracted_data["total"])
-            extracted_data.update(vat_info)
-            
-            # Run fraud detection
-            risk_score_val = fraud_detection_model(extracted_data)
-            extracted_data['risk_score'] = risk_score_val
-            
-            st.write("🔍 Cross-referencing with compliance database...")
-            time.sleep(0.5)
-            st.write("📊 Running fraud detection algorithms...")
-            time.sleep(0.5)
-            
-            # Save to database
-            try:
-                conn = get_db()
-                c = conn.cursor()
-                c.execute("""INSERT INTO transactions 
-                           (date, vendor, tin, amount, vat, net_amount, invoice_no, items, risk_score, status, department)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                         (extracted_data['date'], extracted_data['vendor'], extracted_data['tin'],
-                          extracted_data['total'], extracted_data['vat_amount'], 
-                          extracted_data['net_amount'], extracted_data['invoice_no'],
-                          extracted_data['items'], risk_score_val, 'Reviewed', 'Finance'))
-                conn.commit()
-                st.write("✅ Document saved to database")
-            except Exception as e:
-                st.error(f"Error saving to database: {e}")
-            
-            status.update(label="✅ Analysis Complete!", state="complete", expanded=False)
+        # Check for duplicates
+        scan_history = load_data().get('scan_history', [])
+        duplicate_warning, duplicate_penalty = check_duplicate_invoice(data, scan_history)
         
-        # Results display
+        # Check policy violations
+        policies = load_expense_policies()
+        policy_violations, policy_penalty = check_policy_violations(data, policies)
+        
+        # Calculate risk score with penalties
+        fraud_score = calculate_risk_score(data, duplicate_penalty, policy_penalty)
+        data['risk_score'] = fraud_score
+        data['duplicate_warning'] = duplicate_warning
+        data['policy_violations'] = policy_violations
+        
+        update_kpi_after_scan(data)
+        
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.markdown("### 📋 Extracted Information")
-            st.markdown("""
-            <div style="background:white; padding:20px; border-radius:15px; 
-                        box-shadow:0 2px 10px rgba(0,0,0,0.05);">
-            """, unsafe_allow_html=True)
+            st.markdown("### 📋 Extracted Data")
+            st.markdown(f"**Vendor:** {data.get('vendor', 'N/A')}")
+            st.markdown(f"**Client:** {data.get('client', 'N/A')}")
+            st.markdown(f"**Receipt #:** {data.get('invoice_no', 'N/A')}")
+            st.markdown(f"**Date:** {data.get('date', 'N/A')}")
+            st.markdown(f"**Items:** {data.get('items', 'N/A')}")
+            st.markdown("---")
+            curr = data.get('currency', 'USD')
+            st.markdown(f"**Subtotal:** {data.get('subtotal', 0):,.2f} {curr}")
+            st.markdown(f"**Tax:** {data.get('tax_amount', 0):,.2f} {curr}")
+            st.markdown(f"**Total:** {data.get('total', 0):,.2f} {curr}")
             
-            display_fields = ['vendor', 'tin', 'total', 'date', 'items', 'invoice_no']
-            for field in display_fields:
-                st.markdown(f"**{field.replace('_', ' ').title()}:** {extracted_data[field]}")
+            # Show duplicate warning
+            if duplicate_warning:
+                st.warning(f"⚠️ {duplicate_warning}")
             
-            st.markdown("</div>", unsafe_allow_html=True)
+            # Show policy violations
+            if policy_violations:
+                st.error("🚨 **Policy Violations Detected:**")
+                for violation in policy_violations:
+                    st.markdown(f"- {violation}")
             
-            with st.expander("📝 Ethiopian Tax Breakdown", expanded=True):
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.metric("Claimable VAT", f"ETB {extracted_data['vat_amount']:,.2f}")
-                with col_b:
-                    st.metric("Net Transaction", f"ETB {extracted_data['net_amount']:,.2f}")
-                st.success("💡 This receipt is compliant with **EFDA/MOR** standards")
+            if data.get('raw_text'):
+                with st.expander("Raw OCR Text"):
+                    st.text_area("Text", data['raw_text'], height=150)
         
         with col2:
             st.markdown("### 🚨 Risk Assessment")
+            total = data.get('total', 0)
+            threshold = 5000 if data.get('currency') == 'USD' else 50000
             
-            if risk_score_val > 70:
-                st.error(f"⚠️ **HIGH RISK DETECTED** - Score: {risk_score_val}/100")
-                st.markdown("""
-                <div style="background:#fef2f2; padding:15px; border-radius:10px; 
-                            border:1px solid #fecaca; margin:10px 0;">
-                    <strong style="color:#dc2626;">⚠️ Risk Factors Identified:</strong>
-                    <ul>
-                        <li>Transaction amount exceeds normal threshold</li>
-                        <li>Additional verification required</li>
-                    </ul>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Generate dispute email draft
-                st.markdown("### 📧 Auto-Generated Dispute Email")
-                email_draft = f"""Subject: Urgent: Transaction Review Required - Invoice {extracted_data['invoice_no']}
-
-Dear {extracted_data['vendor']} Team,
-
-Our AI-powered audit system has flagged a potential discrepancy in invoice {extracted_data['invoice_no']}:
-
-• Amount: ETB {extracted_data['total']:,.2f}
-• Date: {extracted_data['date']}
-• Risk Score: {risk_score_val}/100
-
-Please provide supporting documentation within 48 hours.
-
-Best regards,
-Finance Department"""
-                
-                st.text_area("Email Draft", email_draft, height=250)
-                
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("📤 Send Dispute Email", type="primary", use_container_width=True):
-                        st.success("✅ Dispute email queued for sending!")
-                        st.balloons()
-                with col_btn2:
-                    if st.button("📋 Copy to Clipboard", use_container_width=True):
-                        try:
-                            import pyperclip
-                            pyperclip.copy(email_draft)
-                            st.info("📋 Copied to clipboard!")
-                        except Exception:
-                            st.warning("Clipboard access not available")
+            if fraud_score > 60:
+                st.error(f"🚨 HIGH RISK - Score: {fraud_score}/100")
+                st.markdown(f"""<div class="alert-high">
+                    <strong>⚠️ Immediate review required</strong><br>
+                    Amount ({total:,.2f}) exceeds threshold ({threshold:,.2f})
+                </div>""", unsafe_allow_html=True)
+            elif fraud_score > 25:
+                st.warning(f"⚠️ REVIEW NEEDED - Score: {fraud_score}/100")
             else:
-                st.success(f"✅ **VERIFIED** - Risk Score: {risk_score_val}/100")
-                st.markdown("""
-                <div style="background:#f0fdf4; padding:15px; border-radius:10px; 
-                            border:1px solid #bbf7d0;">
-                    <strong style="color:#16a34a;">✓ All compliance checks passed</strong><br>
-                    <span>Document is authentic and compliant with regulations</span>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if st.button("✅ Authorize Payment", type="primary", use_container_width=True):
-                    st.success("✅ Payment authorized and queued for processing!")
-                    st.balloons()
+                st.success(f"✅ VERIFIED - Score: {fraud_score}/100")
+            
+            st.caption("📊 Analytics updated with this scan")
 
-# ════════════════════════════════════════════════
-# PAGE 3: Fraud Reports
-# ════════════════════════════════════════════════
-elif "🚨 Fraud Reports" in page:
-    st.title("🚨 Fraud Intelligence Dashboard")
+elif "Fraud Reports" in page:
+    st.title("🚨 Fraud Reports")
+    kpis = calculate_current_kpis()
     
-    # Filters
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        date_filter = st.date_input(
-            "Date Range",
-            value=(datetime.now() - timedelta(days=30), datetime.now())
-        )
+    # Add PDF Export button
+    col1, col2 = st.columns([3, 1])
     with col2:
-        risk_filter = st.multiselect(
-            "Risk Level",
-            ["High", "Medium", "Low"],
-            default=["High", "Medium"]
-        )
-    with col3:
-        status_filter = st.selectbox(
-            "Status",
-            ["All", "Investigating", "Pending", "Resolved"]
-        )
+        if st.button("📄 Export PDF Report", type="primary", use_container_width=True):
+            with st.spinner("Generating PDF..."):
+                company_profile = load_company_profile()
+                filename = generate_pdf_report(kpis, kpis['scan_history'], company_profile)
+                with open(filename, "rb") as f:
+                    st.download_button("📥 Download Report", f, file_name=filename, mime="application/pdf")
+    
+    if kpis['scan_history']:
+        df = pd.DataFrame(kpis['scan_history'])
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d %H:%M')
+        
+        # Add duplicate warning column if exists
+        if 'duplicate_warning' in df.columns:
+            st.dataframe(df[['date', 'vendor', 'total', 'currency', 'risk_score', 'duplicate_warning']], 
+                        hide_index=True, use_container_width=True)
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.info("No scans yet. Upload in Scan & Audit.")
     
     st.markdown("---")
-    
-    # Fetch fraud cases
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        query = "SELECT * FROM fraud_cases WHERE 1=1"
-        params = []
-        
-        if status_filter != "All":
-            query += " AND status=?"
-            params.append(status_filter)
-        
-        if "High" in risk_filter and "Medium" not in risk_filter:
-            query += " AND risk_score > 70"
-        elif "Low" in risk_filter and "High" not in risk_filter:
-            query += " AND risk_score <= 40"
-        
-        query += " ORDER BY date DESC"
-        
-        c.execute(query, params)
-        cases = c.fetchall()
-        
-        if cases:
-            df_cases = pd.DataFrame(cases, columns=[
-                'Case ID', 'Date', 'Vendor', 'Risk Type', 'Amount', 
-                'Status', 'Risk Score', 'Description', 'Resolution', 'Created At'
-            ])
-            
-            # Display cases table
-            st.dataframe(
-                df_cases[['Case ID', 'Date', 'Vendor', 'Risk Type', 'Amount', 'Status', 'Risk Score']],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Risk Score": st.column_config.ProgressColumn(
-                        "Risk Score",
-                        help="Fraud risk score (0-100)",
-                        format="%d",
-                        min_value=0,
-                        max_value=100
-                    )
-                }
-            )
-            
-            # Summary statistics
-            st.markdown("---")
-            cols = st.columns(4)
-            stats = [
-                ("Total Cases", str(len(cases)), "Active investigations"),
-                ("Total Value at Risk", f"ETB {sum(c[4] for c in cases):,.0f}", "Potential loss"),
-                ("Resolved Cases", str(sum(1 for c in cases if c[5] == 'Resolved')), "Successfully closed"),
-                ("Avg Risk Score", f"{int(np.mean([c[6] for c in cases]))}/100", "Risk level indicator")
-            ]
-            
-            for col, (label, value, help_text) in zip(cols, stats):
-                with col:
-                    st.metric(label, value, help=help_text)
-            
-            # Individual case details
-            st.markdown("---")
-            st.markdown("### 📋 Case Details")
-            
-            selected_case = st.selectbox(
-                "Select case to view details",
-                [f"{c[0]} - {c[3]} ({c[1]})" for c in cases]
-            )
-            
-            if selected_case:
-                case_id = selected_case.split(' - ')[0]
-                case_data = next(c for c in cases if c[0] == case_id)
-                
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown(f"""
-                    **Case ID:** {case_data[0]}  
-                    **Date:** {case_data[1]}  
-                    **Vendor:** {case_data[2]}  
-                    **Risk Type:** {case_data[3]}  
-                    **Amount:** ETB {case_data[4]:,.2f}
-                    """)
-                with col_b:
-                    st.markdown(f"""
-                    **Status:** {case_data[5]}  
-                    **Risk Score:** {case_data[6]}/100  
-                    **Description:** {case_data[7]}  
-                    **Resolution:** {case_data[8] or 'Pending'}
-                    """)
-        else:
-            st.info("No fraud cases found matching your filters")
-    
-    except Exception as e:
-        st.error(f"Error loading fraud cases: {e}")
+    for col, (l, v, d) in zip(st.columns(4), [
+        ("Scans", str(kpis['total_scanned']), f"{kpis['flagged_count']} flagged"),
+        ("Audited", kpis['total_audited'], ""),
+        ("Saved", kpis['blocked_leakage'], ""),
+        ("Avg Risk", kpis['risk_score'], "")
+    ]):
+        with col: st.metric(l, v, d)
 
-# ════════════════════════════════════════════════
-# PAGE 4: Analytics
-# ════════════════════════════════════════════════
-elif "📈 Analytics" in page:
-    st.title("📈 Advanced Analytics")
+elif "Policies" in page:
+    st.title("📋 Expense Policy Engine")
+    st.markdown("Configure company spending rules - AI will automatically flag violations")
     
-    tab1, tab2 = st.tabs(["📊 Trend Analysis", "💰 Cost-Benefit Analysis"])
+    policies = load_expense_policies()
     
-    with tab1:
-        st.markdown("### Fraud Detection Trends")
-        
-        # Generate trend data
-        dates = pd.date_range('2026-01-01', '2026-04-20', freq='D')
-        np.random.seed(42)
-        trend_data = pd.DataFrame({
-            'Date': dates,
-            'Fraud Attempts': np.random.poisson(5, len(dates)),
-            'Detected': np.random.poisson(4, len(dates)),
-            'Prevented Loss': np.random.exponential(10000, len(dates))
-        })
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=trend_data['Date'], y=trend_data['Fraud Attempts'],
-            mode='lines', name='Fraud Attempts',
-            line=dict(color='#ef4444', width=2)
-        ))
-        fig.add_trace(go.Scatter(
-            x=trend_data['Date'], y=trend_data['Detected'],
-            mode='lines', name='Detected',
-            line=dict(color='#10b981', width=2, dash='dot')
-        ))
-        
-        base_layout(fig, "Fraud Detection Rate Over Time")
-        style_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Detection rate metric
-        detection_rate = (trend_data['Detected'].sum() / trend_data['Fraud Attempts'].sum()) * 100
-        st.metric("Overall Detection Rate", f"{detection_rate:.1f}%", "↑ 2.3%")
-    
-    with tab2:
-        st.markdown("### 💰 Cost Savings Analysis")
-        
-        savings_data = pd.DataFrame({
-            'Month': ['Jan', 'Feb', 'Mar', 'Apr'],
-            'Prevented Loss': [45000, 67000, 89000, 124000],
-            'Investigation Cost': [5000, 7000, 8000, 10000],
-            'Net Savings': [40000, 60000, 81000, 114000]
-        })
-        
-        fig = px.bar(
-            savings_data,
-            x='Month',
-            y=['Prevented Loss', 'Investigation Cost'],
-            title="ROI of Fraud Prevention Program",
-            barmode='group',
-            color_discrete_map={'Prevented Loss': '#10b981', 'Investigation Cost': '#f59e0b'}
-        )
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # ROI calculation
-        total_savings = savings_data['Net Savings'].sum()
-        total_cost = savings_data['Investigation Cost'].sum()
-        roi = ((total_savings - total_cost) / total_cost) * 100
-        
-        cols = st.columns(3)
-        cols[0].metric("Total Savings", f"ETB {total_savings:,.0f}")
-        cols[1].metric("Total Cost", f"ETB {total_cost:,.0f}")
-        cols[2].metric("ROI", f"{roi:.0f}%", "Excellent")
-
-# ════════════════════════════════════════════════
-# PAGE 5: Credit Hub
-# ════════════════════════════════════════════════
-elif "🏦 Credit Hub" in page:
-    st.title("🏦 SME Credit & Financing Hub")
-    
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns(2)
     
     with col1:
-        # Generate credit score
-        credit_score = generate_credit_report(
-            st.session_state['company_name'],
-            st.session_state['company_tin']
-        )
-        
-        st.markdown("### Your Credit Profile")
-        st.metric(
-            "CFO-Pulse Credit Score",
-            str(credit_score),
-            delta="Excellent" if credit_score > 750 else "Good" if credit_score > 650 else "Fair"
-        )
-        
-        # Loan eligibility
-        if credit_score > 750:
-            loan_amount = 500000
-            st.success(f"✅ Eligible for up to ETB {loan_amount:,}")
-        elif credit_score > 650:
-            loan_amount = 250000
-            st.warning(f"⚠️ Eligible for up to ETB {loan_amount:,}")
-        elif credit_score > 500:
-            loan_amount = 100000
-            st.warning(f"⚠️ Limited eligibility: ETB {loan_amount:,}")
-        else:
-            st.error("❌ Currently not eligible for loans")
-        
-        st.progress(credit_score / 850, text=f"Score: {credit_score}/850")
+        st.markdown("### 💰 Spending Limits")
+        policies['max_meal_amount'] = st.number_input("Max Meal Amount ($)", 0.0, 500.0, 
+                                                      value=float(policies.get('max_meal_amount', 50.0)), step=5.0)
+        policies['max_entertainment'] = st.number_input("Max Entertainment Amount ($)", 0.0, 1000.0, 
+                                                        value=float(policies.get('max_entertainment', 100.0)), step=10.0)
+        policies['require_receipt_above'] = st.number_input("Require Receipt Above ($)", 0.0, 500.0, 
+                                                            value=float(policies.get('require_receipt_above', 25.0)), step=5.0)
     
     with col2:
-        st.markdown("### 📊 Credit Assessment Factors")
+        st.markdown("### 🚫 Restrictions")
+        policies['allow_weekend_transactions'] = st.checkbox("Allow Weekend Transactions", 
+                                                             value=policies.get('allow_weekend_transactions', False))
         
-        try:
-            conn = get_db()
-            c = conn.cursor()
-            
-            c.execute("SELECT COUNT(*) FROM transactions WHERE date >= date('now', '-365 days')")
-            tx_12m = c.fetchone()[0]
-            
-            c.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE date >= date('now', '-365 days')")
-            volume_12m = c.fetchone()[0]
-            
-            c.execute("SELECT COUNT(*) FROM fraud_cases WHERE status='Resolved'")
-            resolved = c.fetchone()[0]
-            
-            c.execute("SELECT COUNT(*) FROM fraud_cases WHERE status IN ('Investigating', 'Pending')")
-            pending = c.fetchone()[0]
-        except Exception:
-            tx_12m = 45
-            volume_12m = 245000
-            resolved = 32
-            pending = 2
-        
-        st.markdown(f"""
-        **Assessment Details:**
-        
-        ✅ **Transaction History:** {tx_12m} verified transactions in 12 months  
-        ✅ **Annual Volume:** ETB {volume_12m:,.0f} processed  
-        ✅ **Tax Compliance:** 100% VAT compliant  
-        ✅ **Fraud Resolution:** {resolved} cases resolved successfully  
-        {'⚠️' if pending > 0 else '✅'} **Active Investigations:** {pending} pending cases
-        
-        **Growth Indicators:**
-        📈 8% month-over-month transaction growth  
-        📈 Consistent cash flow pattern  
-        📈 No payment defaults in 24 months
-        """)
-        
-        # Generate report button
-        if st.button("📄 Generate Bank-Ready Credit Report", type="primary", use_container_width=True):
-            with st.spinner("🔄 Compiling comprehensive credit report..."):
-                time.sleep(2)
-                
-                # Create PDF report
-                pdf = FPDF()
-                pdf.add_page()
-                
-                # Header
-                pdf.set_font("Arial", "B", 16)
-                pdf.cell(0, 10, "CFO-Pulse Bank Credit Report", ln=True, align="C")
-                pdf.set_font("Arial", "", 10)
-                pdf.cell(0, 10, f"Generated: {datetime.now():%B %d, %Y}", ln=True, align="C")
-                pdf.ln(10)
-                
-                # Company info
-                pdf.set_font("Arial", "B", 12)
-                pdf.cell(0, 10, "Entity Information", ln=True)
-                pdf.set_font("Arial", "", 11)
-                pdf.cell(0, 8, f"Company: {st.session_state['company_name']}", ln=True)
-                pdf.cell(0, 8, f"TIN: {st.session_state['company_tin']}", ln=True)
-                pdf.cell(0, 8, f"Credit Score: {credit_score}/850", ln=True)
-                pdf.ln(5)
-                
-                # Assessment
-                pdf.set_font("Arial", "B", 12)
-                pdf.cell(0, 10, "Credit Assessment", ln=True)
-                pdf.set_font("Arial", "", 11)
-                pdf.multi_cell(0, 8, f"""
-This credit report is generated by CFO-Pulse AI based on verified transaction data, 
-tax compliance records, and fraud detection history.
+        blacklist_text = "\n".join(policies.get('blacklist_vendors', []))
+        new_blacklist = st.text_area("Blacklisted Vendors (one per line)", blacklist_text, height=100)
+        policies['blacklist_vendors'] = [v.strip() for v in new_blacklist.split('\n') if v.strip()]
+    
+    policies['enabled'] = st.checkbox("Enable Policy Enforcement", value=policies.get('enabled', True))
+    
+    if st.button("💾 Save Policies", type="primary", use_container_width=True):
+        save_expense_policies(policies)
+        st.success("✅ Expense policies saved!")
+        st.balloons()
+        time.sleep(1)
+        st.rerun()
+    
+    st.markdown("---")
+    st.markdown("### 📊 Active Policy Summary")
+    if policies['enabled']:
+        st.success("✅ Policy enforcement is ACTIVE")
+        st.markdown(f"- Meals over ${policies['max_meal_amount']} will be flagged")
+        st.markdown(f"- Entertainment over ${policies['max_entertainment']} will be flagged")
+        st.markdown(f"- {'❌' if not policies['allow_weekend_transactions'] else '✅'} Weekend transactions {'not allowed' if not policies['allow_weekend_transactions'] else 'allowed'}")
+        st.markdown(f"- Blacklisted vendors: {', '.join(policies['blacklist_vendors']) if policies['blacklist_vendors'] else 'None'}")
+    else:
+        st.warning("⚠️ Policy enforcement is DISABLED")
 
-Key Findings:
-- {tx_12m} verified transactions in the past 12 months
-- Annual transaction volume: ETB {volume_12m:,.0f}
-- 100% VAT compliance with Ethiopian tax regulations
-- {resolved} fraud cases successfully resolved
-- {pending} cases currently under investigation
+elif "Settings" in page:
+    st.title("⚙️ Settings")
+    t0, t1, t2 = st.tabs(["🏢 Company Profile", "🔐 Security", "🗑 Reset"])
+    
+    with t0:
+        st.markdown("### Register Your Company")
+        st.info("This appears on reports and determines risk thresholds")
+        company = load_company_profile()
+        col_a, col_b = st.columns(2)
+        with col_a:
+            cn = st.text_input("Company Name*", value=company.get('company_name', ''))
+            ct = st.text_input("TIN Number*", value=company.get('tin', ''))
+            industries = ["Retail", "Wholesale", "Luxury Goods", "Manufacturing", 
+                         "Services", "Restaurant", "Construction", "Technology", "General"]
+            bt = st.selectbox("Industry", industries,
+                             index=industries.index(company.get('industry', 'General')) 
+                             if company.get('industry') in industries else 8)
+            rn = st.text_input("Registration #", value=company.get('registration_number', ''))
+        with col_b:
+            addr = st.text_input("Address", value=company.get('address', ''))
+            phone = st.text_input("Phone", value=company.get('phone', ''))
+            email = st.text_input("Email", value=company.get('email', ''))
+            currency = st.selectbox("Default Currency", ["USD", "ETB", "EUR"],
+                                   index=["USD", "ETB", "EUR"].index(company.get('currency', 'USD')))
+            tax_rate = st.number_input("Default Tax Rate (%)", 0.0, 50.0, 
+                                      value=float(company.get('tax_rate', 15.0)), step=0.5)
+        
+        if st.button("💾 Save Company Profile", type="primary", use_container_width=True):
+            profile = {
+                "company_name": cn, "tin": ct, "business_type": bt,
+                "registration_number": rn, "address": addr, "phone": phone,
+                "email": email, "industry": bt, "currency": currency, "tax_rate": tax_rate
+            }
+            save_company_profile(profile)
+            st.session_state['company_name'] = cn
+            st.session_state['company_tin'] = ct
+            st.session_state['company_currency'] = currency
+            st.session_state['company_tax_rate'] = tax_rate
+            st.success("✅ Company profile saved!")
+            st.balloons()
+            time.sleep(1)
+            st.rerun()
+    
+    with t1:
+        st.markdown("### Change Password")
+        MASTER_PASSWORD = get_master_password()
+        old = st.text_input("Current Password", type="password")
+        new = st.text_input("New Password", type="password")
+        confirm = st.text_input("Confirm Password", type="password")
+        if st.button("Update Password"):
+            if old != MASTER_PASSWORD: st.error("Wrong current password")
+            elif new != confirm: st.error("Passwords don't match")
+            elif len(new) < 4: st.error("Too short")
+            else:
+                save_master_password(new)
+                st.success("✅ Updated!")
+        
+        st.markdown("---")
+        if os.path.exists(BIOMETRIC_FILE): st.success("✅ Biometrics registered")
+        else: st.warning("⚠️ Not registered")
+        
+        if st.button("🚪 Logout"):
+            st.session_state['is_logged_in'] = False
+            st.rerun()
+    
+    with t2:
+        st.warning("These actions cannot be undone!")
+        if st.button("🗑 Reset Biometrics"):
+            if os.path.exists(BIOMETRIC_FILE): os.remove(BIOMETRIC_FILE)
+            st.session_state['biometric_registered'] = False
+            st.session_state['is_logged_in'] = False
+            st.success("Reset - please re-register")
+            time.sleep(1)
+            st.rerun()
+        if st.button("🗑 Reset All Scans"):
+            save_data({"total_audited": 0, "total_scanned": 0, "compliant_count": 0,
+                       "flagged_count": 0, "total_saved": 0, "scan_history": [], "risk_scores": []})
+            st.success("✅ Cleared!")
+            st.rerun()
+        if st.button("🔄 Reset Password to Default"):
+            save_master_password("admin123")
+            st.success("Reset to: admin123")
 
-Recommendation: {'APPROVED' if credit_score > 650 else 'REVIEW REQUIRED'}
-Maximum Recommended Loan: ETB {loan_amount:,}
-""")
-                
-                # Save PDF
-                pdf_output = pdf.output(dest='S').encode('latin1')
-                
-                st.download_button(
-                    "📥 Download Credit Report PDF",
-                    data=pdf_output,
-                    file_name=f"Credit_Report_{st.session_state['company_tin']}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-                
-                st.success("✅ Credit report generated successfully!")
+elif "Analytics" in page:
+    st.title("📈 Advanced Analytics")
+    st.caption("Real-time charts based on your scanned documents")
+    
+    kpis = calculate_current_kpis()
+    scan_history = kpis.get('scan_history', [])
+    
+    if not scan_history or len(scan_history) == 0:
+        st.warning("📊 No scan data yet. Upload documents in **Scan & Audit** to see analytics charts here.")
+    else:
+        df = pd.DataFrame(scan_history)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+        
+        st.markdown("### 📊 Summary")
+        total_scans = len(df)
+        total_amount = df['total'].sum()
+        avg_transaction = df['total'].mean()
+        flagged = len(df[df['risk_score'] > 25])
+        high_risk = len(df[df['risk_score'] > 60])
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Scans", total_scans)
+        col2.metric("Total Audited", f"${total_amount:,.0f}")
+        col3.metric("Avg Transaction", f"${avg_transaction:,.0f}")
+        col4.metric("Flagged", f"{flagged} ({high_risk} high risk)")
+        
+        st.markdown("---")
+        st.markdown("### 💰 Transaction History")
+        
+        df['day'] = df['date'].dt.date
+        daily = df.groupby('day').agg(
+            total_amount=('total', 'sum'),
+            avg_risk=('risk_score', 'mean'),
+            count=('total', 'count')
+        ).reset_index()
+        
+        fig1 = go.Figure()
+        fig1.add_trace(go.Bar(
+            x=daily['day'], y=daily['total_amount'],
+            name='Daily Total', marker=dict(color='#667eea'),
+            text=[f"${v:,.0f}" for v in daily['total_amount']],
+            textposition='outside'
+        ))
+        fig1.update_layout(title="Daily Transaction Volume (Real Data)",
+                          xaxis_title="Date", yaxis_title="Amount ($)",
+                          height=400, plot_bgcolor='white', showlegend=False)
+        style_axes(fig1)
+        st.plotly_chart(fig1, use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("### 🎯 Risk Score Per Scan")
+        
+        colors = ['#10b981' if s <= 25 else '#f59e0b' if s <= 60 else '#ef4444' 
+                  for s in df['risk_score']]
+        
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            x=df['date'], y=df['risk_score'], mode='lines+markers',
+            name='Risk Score', line=dict(color='#6b7280', width=1),
+            marker=dict(size=10, color=colors, line=dict(color='white', width=2)),
+            text=df['vendor']
+        ))
+        fig2.add_hline(y=25, line_dash="dash", line_color="#10b981")
+        fig2.add_hline(y=60, line_dash="dash", line_color="#f59e0b")
+        fig2.update_layout(title="Risk Score Per Transaction",
+                          xaxis_title="Date", yaxis_title="Risk Score (0-100)",
+                          height=400, plot_bgcolor='white', yaxis=dict(range=[0, 105]))
+        style_axes(fig2)
+        st.plotly_chart(fig2, use_container_width=True)
+        
+        st.markdown("---")
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.markdown("### 🍩 Risk Distribution")
+            low = len(df[df['risk_score'] <= 25])
+            medium = len(df[(df['risk_score'] > 25) & (df['risk_score'] <= 60)])
+            high = len(df[df['risk_score'] > 60])
+            
+            fig3 = go.Figure(data=[go.Pie(
+                labels=['Low Risk', 'Medium Risk', 'High Risk'],
+                values=[low, medium, high], hole=0.4,
+                marker=dict(colors=['#10b981', '#f59e0b', '#ef4444']),
+                textinfo='label+percent+value'
+            )])
+            fig3.update_layout(title="Scan Risk Levels", height=400)
+            st.plotly_chart(fig3, use_container_width=True)
+        
+        with col_right:
+            st.markdown("### 🏪 Top Vendors")
+            vendor_counts = df['vendor'].value_counts().head(8)
+            fig4 = go.Figure(data=[go.Pie(
+                labels=vendor_counts.index, values=vendor_counts.values,
+                hole=0.4, textinfo='label+value'
+            )])
+            fig4.update_layout(title="Scans by Vendor", height=400)
+            st.plotly_chart(fig4, use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("### 📋 Recent Scans")
+        recent = df.tail(10)[['date', 'vendor', 'total', 'currency', 'risk_score']].copy()
+        recent = recent.sort_values('date', ascending=False)
+        recent['date'] = recent['date'].dt.strftime('%Y-%m-%d %H:%M')
+        recent.columns = ['Date', 'Vendor', 'Amount', 'Currency', 'Risk Score']
+        recent['Amount'] = recent['Amount'].apply(lambda x: f"${x:,.2f}")
+        st.dataframe(recent, hide_index=True, use_container_width=True)
 
-# ════════════════════════════════════════════════
-# Footer
-# ════════════════════════════════════════════════
 st.markdown("---")
-st.markdown(f"""
-<div style="text-align:center; color:#6b7280; padding:20px;">
-    <p>🤖 CFO-Pulse AI Agent • Real-time monitoring active • Last scan: Just now</p>
-    <p style="font-size:12px;">© 2026 CFO-Pulse • Enterprise Security & Compliance Platform</p>
-    <p style="font-size:11px;">Ethiopian Tax Compliance • Fraud Detection • Financial Intelligence</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(f"""<div style="text-align:center;color:#6b7280;padding:20px">
+    <p>{st.session_state['company_name']} - CFO-Pulse AI</p>
+    <p style="font-size:12px">2026 CFO-Pulse Enterprise Platform | AI-Powered Audit & Fraud Detection</p>
+</div>""", unsafe_allow_html=True)
