@@ -155,6 +155,9 @@ Want to see how it works without scanning real receipts? We included sample data
 | Integration with Ethiopian banks' APIs |
 
 ---
+## 🚀 Live Demo
+
+**👉 [Click Here to Test CFO-Pulse AI](https://cfo-pulse-ai-10.onrender.com/)**
 
 ## Competition Submission
 
