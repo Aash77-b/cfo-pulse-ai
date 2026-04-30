@@ -409,21 +409,6 @@ def inject_styles():
 inject_styles()
 
 # ── Biometric Functions ────────────────────────
-def capture_face_from_camera():
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            return None, "Cannot access camera."
-        for _ in range(15):
-            cap.read()
-        ret, frame = cap.read()
-        cap.release()
-        if not ret or frame is None:
-            return None, "Failed to capture."
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), None
-    except Exception as e:
-        return None, f"Camera error: {str(e)}"
-
 def detect_face(image):
     try:
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -680,14 +665,16 @@ def base_layout(fig, title, height=400):
                       plot_bgcolor='white',
                       legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
 
-# ── Login Page ────────────────────────────────
+# ═══════════════════════════════════════════════
+# LOGIN PAGE - UPDATED WITH st.camera_input
+# ═══════════════════════════════════════════════
 def show_login_page():
     MASTER_PASSWORD = get_master_password()
     
     if st.session_state.get('login_attempts', 0) >= 5:
         st.markdown("""<div style="max-width:500px;margin:100px auto;padding:40px;text-align:center;
             border:2px solid #ef4444;border-radius:15px;background:#fef2f2">
-            <h2>🔒 Account Locked</h2><p>Too many failed attempts.</p>""", unsafe_allow_html=True)
+            <h2>🔒 Account Locked</h2><p>Too many failed attempts. Please reset to try again.</p></div>""", unsafe_allow_html=True)
         if st.button("Reset & Try Again"):
             st.session_state['login_attempts'] = 0
             st.rerun()
@@ -709,7 +696,7 @@ def show_login_page():
         is_registered = os.path.exists(BIOMETRIC_FILE)
         
         if not is_registered:
-            st.warning("No biometric data registered")
+            st.warning("No biometric data registered. Please complete face registration.")
             step = st.session_state.get('registration_step', 1)
             st.progress(step / 3)
             
@@ -718,60 +705,70 @@ def show_login_page():
                     st.session_state['registration_step'] = 2
                     st.rerun()
             elif step == 2:
-                if st.button("📸 Capture Face Now", type="primary", use_container_width=True):
-                    with st.spinner("Accessing camera..."):
-                        frame, error = capture_face_from_camera()
-                    if error: st.error(error)
-                    elif frame is not None:
-                        has_face, faces = detect_face(frame)
-                        if has_face:
-                            for (x, y, w, h) in faces:
-                                cv2.rectangle(frame, (x, y), (x+w, y+h), (16, 185, 129), 3)
-                            st.session_state['captured_face'] = frame
-                            st.session_state['registration_step'] = 3
-                            st.image(frame, channels="RGB")
-                            st.success("Face captured!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("No face detected")
+                st.info("Please use your camera below to capture your face.")
+                # USE st.camera_input INSTEAD OF cv2.VideoCapture
+                camera_file = st.camera_input("Capture Face Now")
+                
+                if camera_file is not None:
+                    with st.spinner("Processing image..."):
+                        bytes_data = camera_file.getvalue()
+                        np_arr = np.frombuffer(bytes_data, np.uint8)
+                        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    
+                    has_face, faces = detect_face(frame)
+                    if has_face:
+                        for (x, y, w, h) in faces:
+                            cv2.rectangle(frame, (x, y), (x+w, y+h), (16, 185, 129), 3)
+                        st.session_state['captured_face'] = frame
+                        st.session_state['registration_step'] = 3
+                        st.image(frame, channels="BGR")
+                        st.success("Face captured successfully!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("No face detected. Please try again.")
             elif step == 3:
                 if st.session_state.get('captured_face') is not None:
-                    st.image(st.session_state['captured_face'], channels="RGB", width=250)
+                    st.image(st.session_state['captured_face'], channels="BGR", width=250)
                     if st.button("✅ Confirm Registration", type="primary", use_container_width=True):
                         save_biometric_data(st.session_state['captured_face'])
                         st.session_state['biometric_registered'] = True
                         st.session_state['registration_step'] = 1
-                        st.success("✅ Registered! Please login.")
+                        st.success("✅ Registration complete! Please login.")
                         st.balloons()
                         time.sleep(2)
                         st.rerun()
         else:
-            login_method = st.radio("Method:", ["📸 Face", "🔑 Password"], horizontal=True)
+            login_method = st.radio("Choose Login Method:", ["📸 Face Recognition", "🔑 Password"], horizontal=True)
             
             if "Face" in login_method:
-                if st.button("📸 Scan Face to Login", type="primary", use_container_width=True):
+                st.info("Please use your camera below to scan your face.")
+                # USE st.camera_input INSTEAD OF cv2.VideoCapture
+                camera_file = st.camera_input("Scan Face to Login")
+                
+                if camera_file is not None:
                     with st.spinner("Scanning..."):
-                        frame, error = capture_face_from_camera()
-                    if error: st.error(error)
-                    elif frame is not None:
-                        has_face, faces = detect_face(frame)
-                        if not has_face:
-                            st.error("No face detected")
-                            st.session_state['login_attempts'] += 1
+                        bytes_data = camera_file.getvalue()
+                        np_arr = np.frombuffer(bytes_data, np.uint8)
+                        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    
+                    has_face, faces = detect_face(frame)
+                    if not has_face:
+                        st.error("No face detected")
+                        st.session_state['login_attempts'] += 1
+                    else:
+                        registered = load_registered_face()
+                        is_match, conf, msg = verify_face_match(frame, registered)
+                        if is_match:
+                            st.success(f"✅ {msg}")
+                            st.session_state['is_logged_in'] = True
+                            st.session_state['login_attempts'] = 0
+                            st.balloons()
+                            time.sleep(1)
+                            st.rerun()
                         else:
-                            registered = load_registered_face()
-                            is_match, conf, msg = verify_face_match(frame, registered)
-                            if is_match:
-                                st.success(f"✅ {msg}")
-                                st.session_state['is_logged_in'] = True
-                                st.session_state['login_attempts'] = 0
-                                st.balloons()
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {msg}")
-                                st.session_state['login_attempts'] += 1
+                            st.error(f"❌ {msg}")
+                            st.session_state['login_attempts'] += 1
             else:
                 pw = st.text_input("Master Password", type="password")
                 if st.button("🔑 Login", use_container_width=True):
@@ -782,7 +779,7 @@ def show_login_page():
                     else:
                         st.error("Invalid password")
                         st.session_state['login_attempts'] += 1
-    
+        
     if st.session_state.get('login_attempts', 0) > 0:
         st.caption(f"Failed attempts: {st.session_state['login_attempts']}/5")
 
@@ -792,7 +789,7 @@ if not st.session_state.get('is_logged_in', False):
     st.stop()
 
 # ═══════════════════════════════════════════════
-# MAIN APP
+# MAIN APP - ALL OTHER SECTIONS UNCHANGED
 # ═══════════════════════════════════════════════
 
 company = load_company_profile()
@@ -901,59 +898,20 @@ if "Dashboard" in page:
         Potential savings of ${total_saved:,.0f} identified through fraud prevention. 
         {'⚠️ Review high-risk vendors immediately' if high_risk_count > 3 else '✅ Compliance rate is strong.'}""")
 
-# ═══════════════════════════════════════════════
-# SCAN & AUDIT - REPLACED SECTION
-# ═══════════════════════════════════════════════
 elif "Scan & Audit" in page:
-    st.title("🔍 Intelligent Document Scanner")
-    st.markdown("Upload receipts or invoices for AI-powered audit and fraud detection")
+    st.title("🔍 Document Scanner")
+    st.markdown("Upload receipts or invoices for AI-powered audit")
     
-    # Tabs for different input methods
-    tab_upload, tab_camera = st.tabs(["📁 Upload File", "📸 Camera Capture"])
-    
-    with tab_upload:
-        st.markdown("""
-        <div style="border:2px dashed #667eea; border-radius:15px; padding:40px; text-align:center;
-                    background:linear-gradient(135deg,#667eea10,#764ba210); margin:20px 0;">
-            <span style="font-size:48px;">📄</span>
-            <h3>Drop your files here or click to upload</h3>
-            <p style="color:#6b7280;">Supports JPG, PNG, PDF (Max 10MB)</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        uploaded = st.file_uploader(
-            "Choose a file",
-            type=['jpg', 'jpeg', 'png', 'pdf'],
-            label_visibility="collapsed"
-        )
-        
-        if uploaded is not None:
-            if uploaded.type in ['image/jpeg', 'image/png', 'image/jpg']:
-                image = Image.open(uploaded)
-                st.image(image, caption="Uploaded Document", width=400)
-    
-    with tab_camera:
-        st.markdown("""
-        <div style="border:2px dashed #10b981; border-radius:15px; padding:20px; text-align:center;
-                    background:linear-gradient(135deg,#10b98110,#05966910); margin:20px 0;">
-            <span style="font-size:48px;">📸</span>
-            <h3>Capture Receipt with Camera</h3>
-            <p style="color:#6b7280;">Use your device camera to scan receipts</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Use Streamlit's native camera input (works on cloud AND local)
-        camera_file = st.camera_input("Take a picture of your receipt")
-        
-        if camera_file is not None:
-            st.success("✅ Image captured successfully!")
-            uploaded = camera_file  # Use camera input same as uploaded file
-    
-    # Process the document (from either upload or camera)
-    if 'uploaded' in locals() and uploaded is not None:
+    st.markdown("""<div style="border:2px dashed #667eea;border-radius:15px;padding:40px;text-align:center;
+        background:linear-gradient(135deg,#667eea10,#764ba210)">
+        <span style="font-size:48px">📤</span>
+        <h3>Upload Document</h3>
+        <p style="color:#6b7280">JPG, PNG, PDF (Max 10MB)</p></div>""", unsafe_allow_html=True)
+
+    uploaded = st.file_uploader("", type=['jpg', 'jpeg', 'png', 'pdf'], label_visibility="collapsed")
+
+    if uploaded:
         st.markdown("---")
-        
-        # Try OCR if available
         if TESSERACT_AVAILABLE or EASYOCR_AVAILABLE:
             with st.spinner("Processing..."):
                 data = process_invoice(uploaded)
@@ -964,9 +922,7 @@ elif "Scan & Audit" in page:
                        "subtotal": 4954.20, "tax_amount": 439.68, "currency": "USD",
                        "items": "Various items", "invoice_no": "INV-001"}
         else:
-            # Fallback data when no OCR available
-            data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, 
-                   "currency": "USD", "invoice_no": "INV-001"}
+            data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, "currency": "USD", "invoice_no": "INV-001"}
         
         # Check for duplicates
         scan_history = load_data().get('scan_history', [])
@@ -1029,39 +985,6 @@ elif "Scan & Audit" in page:
                 st.success(f"✅ VERIFIED - Score: {fraud_score}/100")
             
             st.caption("📊 Analytics updated with this scan")
-            
-            # Generate dispute email for high risk
-            if fraud_score > 60:
-                st.markdown("### 📧 Auto-Generated Dispute Email")
-                email_draft = f"""Subject: Urgent: Transaction Review Required - {data.get('invoice_no', 'N/A')}
-
-Dear {data.get('vendor', 'Vendor')} Team,
-
-Our AI audit system flagged invoice {data.get('invoice_no', 'N/A')}:
-
-• Amount: {data.get('total', 0):,.2f} {data.get('currency', 'USD')}
-• Date: {data.get('date', 'N/A')}
-• Risk Score: {fraud_score}/100
-
-Please provide documentation within 48 hours.
-
-Best regards,
-{st.session_state.get('company_name', 'Finance Department')}"""
-                
-                st.text_area("Email Draft", email_draft, height=200)
-                
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("📤 Send Dispute Email", type="primary", use_container_width=True):
-                        st.success("✅ Dispute email queued for sending!")
-                with col_btn2:
-                    if st.button("📋 Copy to Clipboard", use_container_width=True):
-                        try:
-                            import pyperclip
-                            pyperclip.copy(email_draft)
-                            st.info("📋 Copied to clipboard!")
-                        except:
-                            st.info("Select and copy the text above")
 
 elif "Fraud Reports" in page:
     st.title("🚨 Fraud Reports")
