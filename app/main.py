@@ -17,26 +17,9 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
-# ── OCR Setup ──────────────────────────────────
+# ── OCR Setup (EasyOCR Only - Works on Render) ──
 TESSERACT_AVAILABLE = False
 EASYOCR_AVAILABLE = False
-
-try:
-    import pytesseract
-    if platform.system() == "Windows":
-        possible_paths = [
-            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                pytesseract.pytesseract.tesseract_cmd = path
-                TESSERACT_AVAILABLE = True
-                break
-    else:
-        TESSERACT_AVAILABLE = True
-except ImportError:
-    pass
 
 try:
     import easyocr
@@ -352,7 +335,7 @@ def calculate_current_kpis():
         "total_audited": f"{db['total_audited']:,.0f}",
         "total_audited_delta": f"+{db['total_scanned']} scans",
         "compliance_rate": f"{compliance_rate}%",
-        "compliance_delta": f"{db['compliant_count']}/{db['total_scanned']} compliant",
+        "compliance_delta": f"{db['compliant_count']}/{db['total_scanned']} compliant" if db['total_scanned'] > 0 else "0/0 compliant",
         "blocked_leakage": f"{db['total_saved']:,.0f}",
         "blocked_delta": f"{db['flagged_count']} flagged",
         "risk_score": f"{avg_risk}/100",
@@ -451,24 +434,12 @@ def verify_face_match(captured_image, registered_image):
     except Exception as e:
         return False, 0.0, f"Error: {str(e)}"
 
-# ── OCR Functions ──────────────────────────────
+# ── OCR Functions (EasyOCR Only) ──────────────
 @st.cache_resource
 def load_easyocr():
     if EASYOCR_AVAILABLE:
         return easyocr.Reader(['en'], gpu=False)
     return None
-
-def extract_text_tesseract(image):
-    try:
-        configs = ['--psm 6', '--psm 4', '--psm 3']
-        best_text = ""
-        for config in configs:
-            text = pytesseract.image_to_string(image, config=config).strip()
-            if len(text) > len(best_text):
-                best_text = text
-        return best_text
-    except:
-        return ""
 
 def extract_text_easyocr(image, reader):
     try:
@@ -608,15 +579,16 @@ def process_invoice(uploaded_file):
     except:
         return None
     extracted_text = ""
-    if TESSERACT_AVAILABLE:
-        extracted_text = extract_text_tesseract(image)
-    if not extracted_text and EASYOCR_AVAILABLE:
+    
+    # Use ONLY EasyOCR (no Tesseract)
+    if EASYOCR_AVAILABLE:
         reader = load_easyocr()
         extracted_text = extract_text_easyocr(image, reader)
+    
     if extracted_text:
         data = parse_invoice_text(extracted_text)
         data['raw_text'] = extracted_text[:800]
-        data['ocr_engine'] = 'Tesseract' if TESSERACT_AVAILABLE else 'EasyOCR'
+        data['ocr_engine'] = 'EasyOCR'
         return data
     return None
 
@@ -666,7 +638,7 @@ def base_layout(fig, title, height=400):
                       legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
 
 # ═══════════════════════════════════════════════
-# LOGIN PAGE - UPDATED WITH st.camera_input
+# LOGIN PAGE - WITH st.camera_input
 # ═══════════════════════════════════════════════
 def show_login_page():
     MASTER_PASSWORD = get_master_password()
@@ -706,7 +678,6 @@ def show_login_page():
                     st.rerun()
             elif step == 2:
                 st.info("Please use your camera below to capture your face.")
-                # USE st.camera_input INSTEAD OF cv2.VideoCapture
                 camera_file = st.camera_input("Capture Face Now")
                 
                 if camera_file is not None:
@@ -743,7 +714,6 @@ def show_login_page():
             
             if "Face" in login_method:
                 st.info("Please use your camera below to scan your face.")
-                # USE st.camera_input INSTEAD OF cv2.VideoCapture
                 camera_file = st.camera_input("Scan Face to Login")
                 
                 if camera_file is not None:
@@ -789,7 +759,7 @@ if not st.session_state.get('is_logged_in', False):
     st.stop()
 
 # ═══════════════════════════════════════════════
-# MAIN APP - ALL OTHER SECTIONS UNCHANGED
+# MAIN APP - ALL SECTIONS
 # ═══════════════════════════════════════════════
 
 company = load_company_profile()
@@ -821,8 +791,10 @@ with st.sidebar:
     st.markdown(f"**Risk:** {avg_risk}/100")
     st.progress(avg_risk / 100)
     st.markdown("---")
-    if TESSERACT_AVAILABLE: st.success("Tesseract Ready")
-    else: st.error("Tesseract missing")
+    if EASYOCR_AVAILABLE:
+        st.success("✅ EasyOCR Ready")
+    else:
+        st.error("❌ EasyOCR not available")
 
 # ── Dashboard ──────────────────────────────────
 if "Dashboard" in page:
@@ -898,6 +870,7 @@ if "Dashboard" in page:
         Potential savings of ${total_saved:,.0f} identified through fraud prevention. 
         {'⚠️ Review high-risk vendors immediately' if high_risk_count > 3 else '✅ Compliance rate is strong.'}""")
 
+# ── Scan & Audit ────────────────────────────────
 elif "Scan & Audit" in page:
     st.title("🔍 Document Scanner")
     st.markdown("Upload receipts or invoices for AI-powered audit")
@@ -912,16 +885,17 @@ elif "Scan & Audit" in page:
 
     if uploaded:
         st.markdown("---")
-        if TESSERACT_AVAILABLE or EASYOCR_AVAILABLE:
-            with st.spinner("Processing..."):
+        if EASYOCR_AVAILABLE:
+            with st.spinner("Processing document with AI..."):
                 data = process_invoice(uploaded)
             
             if data is None:
-                st.warning("OCR failed - using fallback data")
+                st.warning("OCR could not read this document. Using fallback data.")
                 data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, 
                        "subtotal": 4954.20, "tax_amount": 439.68, "currency": "USD",
                        "items": "Various items", "invoice_no": "INV-001"}
         else:
+            st.error("OCR engine not available. Please check EasyOCR installation.")
             data = {"vendor": "SUPREME LUXURY PROVISIONS", "total": 5393.88, "currency": "USD", "invoice_no": "INV-001"}
         
         # Check for duplicates
@@ -954,11 +928,9 @@ elif "Scan & Audit" in page:
             st.markdown(f"**Tax:** {data.get('tax_amount', 0):,.2f} {curr}")
             st.markdown(f"**Total:** {data.get('total', 0):,.2f} {curr}")
             
-            # Show duplicate warning
             if duplicate_warning:
                 st.warning(f"⚠️ {duplicate_warning}")
             
-            # Show policy violations
             if policy_violations:
                 st.error("🚨 **Policy Violations Detected:**")
                 for violation in policy_violations:
@@ -986,6 +958,7 @@ elif "Scan & Audit" in page:
             
             st.caption("📊 Analytics updated with this scan")
 
+# ── Fraud Reports ───────────────────────────────
 elif "Fraud Reports" in page:
     st.title("🚨 Fraud Reports")
     kpis = calculate_current_kpis()
@@ -1004,7 +977,6 @@ elif "Fraud Reports" in page:
         df = pd.DataFrame(kpis['scan_history'])
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d %H:%M')
         
-        # Add duplicate warning column if exists
         if 'duplicate_warning' in df.columns:
             st.dataframe(df[['date', 'vendor', 'total', 'currency', 'risk_score', 'duplicate_warning']], 
                         hide_index=True, use_container_width=True)
@@ -1022,6 +994,7 @@ elif "Fraud Reports" in page:
     ]):
         with col: st.metric(l, v, d)
 
+# ── Policies ────────────────────────────────────
 elif "Policies" in page:
     st.title("📋 Expense Policy Engine")
     st.markdown("Configure company spending rules - AI will automatically flag violations")
@@ -1068,6 +1041,7 @@ elif "Policies" in page:
     else:
         st.warning("⚠️ Policy enforcement is DISABLED")
 
+# ── Settings ────────────────────────────────────
 elif "Settings" in page:
     st.title("⚙️ Settings")
     t0, t1, t2 = st.tabs(["🏢 Company Profile", "🔐 Security", "🗑 Reset"])
@@ -1151,6 +1125,7 @@ elif "Settings" in page:
             save_master_password("admin123")
             st.success("Reset to: admin123")
 
+# ── Analytics ───────────────────────────────────
 elif "Analytics" in page:
     st.title("📈 Advanced Analytics")
     st.caption("Real-time charts based on your scanned documents")
