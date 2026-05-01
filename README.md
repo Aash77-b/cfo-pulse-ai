@@ -157,7 +157,7 @@ Want to see how it works without scanning real receipts? We included sample data
 ---
 ## 🚀 Live Demo
 
-**👉 [Click Here to Test CFO-Pulse AI](https://cfo-pulse-ai-10.onrender.com/)**
+**👉 [Click Here to Test CFO-Pulse AI](https://[cfo-pulse-ai-10.onrender.com](https://aash77-b-cfo-pulse-ai-appmain-jfvlpl.streamlit.app/)/)**
 
 ## Competition Submission
 
