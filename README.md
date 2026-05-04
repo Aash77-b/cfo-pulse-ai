@@ -36,15 +36,15 @@ We built CFO-Pulse AI to fix that.
 
 ## Tech Stack
 
-| Tool | What it does | Who owns it |
+| Tool | What it does |
 |------|---------------|-------------|
-| Python 3.11 | Core language | Everyone |
-| Streamlit | Web framework | Meron |
-| OpenCV | Face recognition | Selam |
-| Tesseract / EasyOCR | Text extraction | Ashenafi |
-| scikit-learn | Cash flow prediction | Dawit |
-| FPDF | PDF reports | Yonas |
-| Plotly | Charts | Dawit |
+| Python 3.11 | Core language |
+| Streamlit | Web framework |
+| OpenCV | Face recognition |
+| Tesseract / EasyOCR | Text extraction |
+| scikit-learn | Cash flow prediction 
+| FPDF | PDF reports |
+| Plotly | Charts |
 
 ---
 
